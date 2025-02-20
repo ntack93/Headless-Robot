@@ -8429,3 +8429,10 @@ venv/Lib/site-packages/pip-24.3.1.dist-info/RECORD
 venv/Lib/site-packages/pip-24.3.1.dist-info/REQUESTED
 venv/Lib/site-packages/pip-24.3.1.dist-info/top_level.txt
 venv/Lib/site-packages/pip-24.3.1.dist-info/WHEEL
+__pycache__/UltronPreAlpha.cpython-312.pyc
+chatbot/__init__.py
+chatbot/api_handlers.py
+chatbot/chat_handlers.py
+chatbot/commands.py
+chatbot/database.py
+chatbot/utils.py
