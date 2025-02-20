@@ -196,6 +196,17 @@ class BBSBotCLI:
         # Override the bot's send_full_message method
         self.bot.send_full_message = self.sync_send_full_message
 
+        self.reconnect_attempts = 0
+        self.max_reconnect_attempts = 999
+        self.cleanup_duration = 600  # 10 minutes in seconds
+        self.reconnect_delay = 3  # seconds between reconnection attempts
+        self.login_complete = False  # Track if login sequence completed
+        self.tasks = []  # Track background tasks
+
+        # Add keep-alive attributes
+        self.keep_alive_stop_event = asyncio.Event()
+        self.keep_alive_task = None
+
     def setup_logging(self):
         """Configure logging with platform-independent paths"""
         log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'bbs_bot.log')
@@ -226,6 +237,8 @@ class BBSBotCLI:
             if not self.bot.writer.is_closing():
                 self.bot.connected = True
                 self.logger.info(f"Connected to {self.host}:{self.port}")
+                # Start keep-alive when connection is established
+                self.start_keep_alive()
                 return True
             else:
                 self.logger.error("Connection closed immediately after establishing")
@@ -235,6 +248,28 @@ class BBSBotCLI:
             self.logger.error(f"Connection failed: {str(e)}")
             return False
 
+    async def keep_alive(self):
+        """Send an <ENTER> keystroke every 10 seconds to keep the connection alive."""
+        while not self.keep_alive_stop_event.is_set():
+            if self.bot.connected and self.bot.writer:
+                try:
+                    self.bot.writer.write("\r\n")
+                    await self.bot.writer.drain()
+                except Exception as e:
+                    self.logger.error(f"Error in keep-alive: {e}")
+            await asyncio.sleep(10)
+
+    def start_keep_alive(self):
+        """Start the keep-alive coroutine."""
+        self.keep_alive_stop_event.clear()
+        self.keep_alive_task = self.loop.create_task(self.keep_alive())
+
+    def stop_keep_alive(self):
+        """Stop the keep-alive coroutine."""
+        self.keep_alive_stop_event.set()
+        if self.keep_alive_task:
+            self.keep_alive_task.cancel()
+
     async def main_loop(self):
         """Main application loop"""
         if not await self.connect():
@@ -243,12 +278,14 @@ class BBSBotCLI:
 
         print(f"{Fore.GREEN}Connected to {self.host}:{self.port}{Style.RESET_ALL}")
 
-        # Start background tasks
-        input_task = asyncio.create_task(self.handle_user_input())
-        read_task = asyncio.create_task(self.read_bbs_output())
+        # Start background tasks and track them
+        self.tasks = [
+            asyncio.create_task(self.handle_user_input()),
+            asyncio.create_task(self.read_bbs_output())
+        ]
         
         try:
-            await asyncio.gather(input_task, read_task)
+            await asyncio.gather(*self.tasks)
         except asyncio.CancelledError:
             pass
 
@@ -304,41 +341,150 @@ class BBSBotCLI:
             print(f"{Fore.RED}Error sending message: {e}{Style.RESET_ALL}")
 
     async def read_bbs_output(self):
-        """Read and display BBS output"""
-        try:
-            while not self.stop_event.is_set() and self.bot.connected:
+        """Read and display BBS output with reconnection logic"""
+        while not self.stop_event.is_set():
+            try:
+                if not self.bot.connected:
+                    # Attempt reconnection if connection was lost
+                    if await self.attempt_reconnection():
+                        continue
+                    else:
+                        break
+
                 data = await self.bot.reader.read(4096)
                 if not data:
-                    print(f"{Fore.RED}Connection closed by server{Style.RESET_ALL}")
-                    break
-                
-                # Display the output
+                    print(f"{Fore.RED}Connection lost. Attempting to reconnect...{Style.RESET_ALL}")
+                    if not await self.attempt_reconnection():
+                        break
+                    continue
+
+                # Check for cleanup maintenance message
+                if "finish up and log off." in data.lower():
+                    await self.handle_cleanup_maintenance()
+                    continue
+
+                # Display and process the data
                 print(f"{Fore.WHITE}{data}{Style.RESET_ALL}", end='')
                 sys.stdout.flush()
                 
-                # Process data through the bot's trigger system
                 try:
-                    # Use the bot's process_data_chunk method instead of parse_incoming_triggers
                     self.bot.process_data_chunk(data)
                 except Exception as e:
                     self.logger.error(f"Error processing data: {e}")
 
+            except Exception as e:
+                print(f"{Fore.RED}Error reading from BBS: {e}{Style.RESET_ALL}")
+                if not await self.attempt_reconnection():
+                    break
+
+        self.bot.connected = False
+
+    async def handle_cleanup_maintenance(self):
+        """Handle cleanup maintenance by disconnecting, waiting, and reconnecting."""
+        print(f"{Fore.YELLOW}Cleanup maintenance detected. Disconnecting for {self.cleanup_duration} seconds...{Style.RESET_ALL}")
+        
+        # Disconnect gracefully
+        await self.disconnect()
+        
+        # Wait for cleanup period
+        await asyncio.sleep(self.cleanup_duration)
+        
+        # Start reconnection attempts
+        await self.attempt_reconnection(is_cleanup=True)
+
+    async def attempt_reconnection(self, is_cleanup=False):
+        """Attempt to reconnect to the BBS with retry logic."""
+        self.reconnect_attempts = 0
+        while self.reconnect_attempts < self.max_reconnect_attempts:
+            self.reconnect_attempts += 1
+            print(f"{Fore.YELLOW}Reconnection attempt {self.reconnect_attempts}/{self.max_reconnect_attempts}...{Style.RESET_ALL}")
+            
+            try:
+                # Attempt to connect
+                if await self.connect():
+                    print(f"{Fore.GREEN}Successfully reconnected!{Style.RESET_ALL}")
+                    # Wait 10 seconds before starting login sequence
+                    await asyncio.sleep(10)
+                    await self.perform_login_sequence()
+                    return True
+                
+                # If connection failed, wait before retrying
+                await asyncio.sleep(self.reconnect_delay)
+            except Exception as e:
+                print(f"{Fore.RED}Reconnection attempt failed: {e}{Style.RESET_ALL}")
+                await asyncio.sleep(self.reconnect_delay)
+        
+        print(f"{Fore.RED}Failed to reconnect after {self.max_reconnect_attempts} attempts{Style.RESET_ALL}")
+        return False
+
+    async def perform_login_sequence(self):
+        """Perform the full login sequence."""
+        try:
+            # Load credentials
+            username = self.load_username()
+            password = self.load_password()
+            
+            # Send username
+            await self.send_message(username + "\r\n")
+            await asyncio.sleep(2)
+            
+            # Send password
+            await self.send_message(password + "\r\n")
+            await asyncio.sleep(1)
+            
+            # Send three Enter keystrokes
+            for _ in range(3):
+                await self.send_message("\r\n")
+                await asyncio.sleep(1)
+            
+            # Send teleconference command
+            await self.send_message("/go tele\r\n")
+            
+            self.login_complete = True
+            print(f"{Fore.GREEN}Login sequence completed{Style.RESET_ALL}")
+            
         except Exception as e:
-            print(f"{Fore.RED}Error reading from BBS: {e}{Style.RESET_ALL}")
-        finally:
-            self.stop_event.set()
-            self.bot.connected = False
+            print(f"{Fore.RED}Error during login sequence: {e}{Style.RESET_ALL}")
+            self.login_complete = False
+
+    def load_username(self):
+        """Load username from file."""
+        try:
+            if os.path.exists("username.json"):
+                with open("username.json", "r") as file:
+                    return json.load(file)
+        except Exception as e:
+            print(f"{Fore.RED}Error loading username: {e}{Style.RESET_ALL}")
+        return ""
+
+    def load_password(self):
+        """Load password from file."""
+        try:
+            if os.path.exists("password.json"):
+                with open("password.json", "r") as file:
+                    return json.load(file)
+        except Exception as e:
+            print(f"{Fore.RED}Error loading password: {e}{Style.RESET_ALL}")
+        return ""
 
     def sync_send_full_message(self, message):
         """Synchronous wrapper for send_full_message that the bot can call"""
         if not message:
             return
-        future = asyncio.run_coroutine_threadsafe(self.send_full_message(message), self.loop)
+            
+        async def wrapped_send():
+            # Convert both direct message sends and full message sends
+            if hasattr(message, '__await__'):  # If it's already a coroutine
+                await message
+            else:
+                await self.send_full_message(message)
+
         try:
-            # Reduce timeout from 10 to 3 seconds
+            future = asyncio.run_coroutine_threadsafe(wrapped_send(), self.loop)
             future.result(timeout=3)
         except Exception as e:
             print(f"{Fore.RED}Error in sync_send_full_message: {e}{Style.RESET_ALL}")
+            self.logger.exception("Error in sync_send_full_message")
 
     async def send_full_message(self, message):
         """Send a full message to the BBS"""
@@ -381,6 +527,8 @@ class BBSBotCLI:
     async def disconnect(self):
         """Safely disconnect from the BBS."""
         if self.bot.connected:
+            # Stop keep-alive before disconnecting
+            self.stop_keep_alive()
             try:
                 # Send a graceful quit message if needed
                 try:
@@ -408,16 +556,25 @@ class BBSBotCLI:
         self.logger.info(f"Received signal {sig.name}, shutting down")
         self.stop_event.set()
         
-        # Use our own disconnect method instead of the bot's
-        await self.disconnect()
+        # Stop keep-alive before canceling tasks
+        self.stop_keep_alive()
         
+        # Cancel all tasks
+        for task in self.tasks:
+            if not task.done():
+                task.cancel()
+        
+        # Wait for tasks to complete with timeout
         try:
-            self.loop.stop()
-        except:
+            await asyncio.wait(self.tasks, timeout=5)
+        except asyncio.CancelledError:
             pass
+        
+        # Use our own disconnect method
+        await self.disconnect()
 
     def run(self):
-        """Main entry point"""
+        """Main entry point with improved shutdown handling"""
         # Handle Linux signals
         for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT):
             self.loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(self.shutdown(s)))
@@ -427,7 +584,56 @@ class BBSBotCLI:
         except Exception as e:
             self.logger.error(f"Error in main loop: {e}")
         finally:
+            # Cancel any pending tasks
+            pending = asyncio.all_tasks(self.loop)
+            for task in pending:
+                task.cancel()
+            
+            # Run loop until tasks complete
+            try:
+                self.loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            except asyncio.CancelledError:
+                pass
+            
+            # Clean up the loop
+            try:
+                self.loop.run_until_complete(self.loop.shutdown_asyncgens())
+            except Exception as e:
+                self.logger.error(f"Error shutting down async generators: {e}")
+            
             self.loop.close()
+
+    async def handle_direct_message(self, username, message):
+        """Handle direct messages by interpreting them as chat queries."""
+        try:
+            # Get the ChatGPT response
+            response = self.get_chatgpt_response(message, direct=True, username=username)
+            
+            # Send the response back to the user via direct message
+            chunks = self.chunk_message(response, 250)
+            for chunk in chunks:
+                full_message = f">{username} {chunk}"
+                await self.send_message(full_message)
+                await asyncio.sleep(0.1)  # Small delay between chunks
+        except Exception as e:
+            self.logger.error(f"Error handling direct message: {e}")
+
+    def process_data_chunk(self, data):
+        """Process incoming data chunks."""
+        # ...existing code...
+
+        # Check for direct messages
+        direct_message_match = re.match(r'From (.+?) \(to you\): (.+)', clean_line)
+        if direct_message_match:
+            username = direct_message_match.group(1)
+            message = direct_message_match.group(2)
+            asyncio.run_coroutine_threadsafe(
+                self.handle_direct_message(username, message), 
+                self.loop
+            )
+            return
+
+        # ...rest of existing code...
 
 def main():
     parser = argparse.ArgumentParser(description='BBS Chatbot CLI')
