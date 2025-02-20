@@ -2802,15 +2802,18 @@ class BBSBotApp:
     def get_trump_post(self):
         """Run the Trump post scraper script and return the latest post."""
         try:
-            command = [
-                sys.executable,
-                r"C:\Users\Noah\OneDrive\Documents\bbschatbot1.0\TrumpsLatestPostScraper.py"
-            ]
-            result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8', errors='ignore', timeout=180)
+            script_path = "/home/cloudshell-user/files/HeadlessRobot/Headless-Robot/TrumpsLatestPostScraper.py"
+            command = [sys.executable, script_path]
+            
+            # Verify script exists before running
+            if not os.path.exists(script_path):
+                return f"Error: Script not found at {script_path}"
+                
+            result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8', 
+                                  errors='ignore', timeout=180)
             output = result.stdout.strip()
 
             if result.returncode != 0:
-                # If the script returned a non-zero exit code
                 error_msg = result.stderr.strip() or "Unknown error from Trump scraper."
                 return f"Error from Trump post script: {error_msg}"
 
@@ -2937,11 +2940,15 @@ class BBSBotApp:
     def get_musk_post(self):
         """Run the Musk post scraper script and return the latest post."""
         try:
-            command = [
-                sys.executable,
-                r"C:\Users\Noah\OneDrive\Documents\bbschatbot1.0\MusksLatestPostScraper.py"
-            ]
-            result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8', errors='ignore', timeout=180)
+            script_path = "/home/cloudshell-user/files/HeadlessRobot/Headless-Robot/MusksLatestPostScraper.py"
+            command = [sys.executable, script_path]
+            
+            # Verify script exists before running
+            if not os.path.exists(script_path):
+                return f"Error: Script not found at {script_path}"
+                
+            result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8', 
+                                  errors='ignore', timeout=180)
             output = result.stdout.strip()
 
             if result.returncode != 0:
