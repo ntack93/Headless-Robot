@@ -30,6 +30,9 @@ class BBSBotCLI:
         # Create instance of the original bot with dummy root
         self.bot = ultron_module.BBSBotApp(dummy_root)
         
+        # Store reference to the bot's command processor
+        self.command_processor = getattr(self.bot, 'command_processor', None)
+        
         # Override connection settings
         self.host = args.host or input("Enter BBS hostname: ").strip()
         self.port = args.port or int(input("Enter port number [23]: ").strip() or "23")
@@ -42,6 +45,9 @@ class BBSBotCLI:
         
         # Initialize state
         self.stop_event = asyncio.Event()
+        
+        # Override the bot's send_full_message method
+        self.bot.send_full_message = self.sync_send_full_message
 
     def setup_logging(self):
         logging.basicConfig(
@@ -102,7 +108,10 @@ class BBSBotCLI:
         while not self.stop_event.is_set():
             try:
                 command = await self.loop.run_in_executor(None, input, f"{Fore.GREEN}> {Style.RESET_ALL}")
-                if command.strip():
+                if not command.strip():
+                    # If empty input (just Enter), send Enter keystroke
+                    await self.send_message("\r\n")
+                else:
                     await self.process_command(command)
             except EOFError:
                 break
@@ -111,22 +120,25 @@ class BBSBotCLI:
         """Process user commands"""
         try:
             if command.startswith('!'):
-                # Handle built-in commands
+                # Handle built-in CLI commands
                 if command.lower() == '!quit':
                     print("Shutting down...")
                     self.stop_event.set()
                     return
                 if command.lower() == '!help':
-                    print(f"{Fore.CYAN}Available commands: !quit, !help{Style.RESET_ALL}")
+                    print(f"{Fore.CYAN}Available commands: !quit, !help, !weather, !yt, !chat, !news{Style.RESET_ALL}")
                     return
-                # Try to use the original bot's command processor if it exists
-                if hasattr(self.bot, 'process_command'):
-                    await self.bot.process_command(command)
+                
+                # Create a fake message format that the bot's trigger system expects
+                fake_message = f"From CLI: {command}"
+                # Use the bot's process_data_chunk method
+                self.bot.process_data_chunk(fake_message)
             else:
                 # Direct message sending
                 await self.send_message(command)
         except Exception as e:
             print(f"{Fore.RED}Error processing command: {e}{Style.RESET_ALL}")
+            self.logger.exception("Command processing error")
 
     async def send_message(self, message):
         """Send a message to the BBS"""
@@ -155,15 +167,67 @@ class BBSBotCLI:
                 print(f"{Fore.WHITE}{data}{Style.RESET_ALL}", end='')
                 sys.stdout.flush()
                 
-                # Let the original bot process the data
-                if hasattr(self.bot, 'process_data'):
-                    await self.bot.process_data(data)
+                # Process data through the bot's trigger system
+                try:
+                    # Use the bot's process_data_chunk method instead of parse_incoming_triggers
+                    self.bot.process_data_chunk(data)
+                except Exception as e:
+                    self.logger.error(f"Error processing data: {e}")
 
         except Exception as e:
             print(f"{Fore.RED}Error reading from BBS: {e}{Style.RESET_ALL}")
         finally:
             self.stop_event.set()
             self.bot.connected = False
+
+    def sync_send_full_message(self, message):
+        """Synchronous wrapper for send_full_message that the bot can call"""
+        if not message:
+            return
+        future = asyncio.run_coroutine_threadsafe(self.send_full_message(message), self.loop)
+        try:
+            # Wait for the message to be sent with a timeout
+            future.result(timeout=10)
+        except Exception as e:
+            print(f"{Fore.RED}Error in sync_send_full_message: {e}{Style.RESET_ALL}")
+
+    async def send_full_message(self, message):
+        """Send a full message to the BBS"""
+        if not message or not self.bot.connected:
+            return
+
+        try:
+            # Split message into chunks of maximum 250 characters
+            chunks = []
+            current_chunk = []
+            current_length = 0
+            
+            # Split by words first
+            words = message.split()
+            for word in words:
+                # If this word would make the chunk too long, send current chunk
+                if current_length + len(word) + 1 > 250:
+                    chunks.append(' '.join(current_chunk))
+                    current_chunk = [word]
+                    current_length = len(word) + 1
+                else:
+                    current_chunk.append(word)
+                    current_length += len(word) + 1
+            
+            # Add the last chunk if there is one
+            if current_chunk:
+                chunks.append(' '.join(current_chunk))
+            
+            # Send each chunk
+            for chunk in chunks:
+                if chunk.strip():  # Only send non-empty chunks
+                    full_message = f"{chunk}\r\n"
+                    self.bot.writer.write(full_message)
+                    await self.bot.writer.drain()
+                    print(f"{Fore.YELLOW}-> {chunk}{Style.RESET_ALL}")  # Show outgoing message
+                    await asyncio.sleep(0.5)  # Small delay between chunks
+        except Exception as e:
+            print(f"{Fore.RED}Error sending message: {e}{Style.RESET_ALL}")
 
     def run(self):
         """Main entry point"""
