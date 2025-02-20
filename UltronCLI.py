@@ -7,6 +7,7 @@ import importlib.util
 import telnetlib3
 from colorama import init, Fore, Style
 import os
+import json
 
 # Initialize colorama for Linux
 init(strip=False)
@@ -195,6 +196,9 @@ class BBSBotCLI:
         
         # Override the bot's send_full_message method
         self.bot.send_full_message = self.sync_send_full_message
+        self.bot.send_private_message = self.sync_send_private_message
+        self.bot.send_page_response = self.sync_send_page_response
+        self.bot.send_direct_message = self.sync_send_direct_message
 
         self.reconnect_attempts = 0
         self.max_reconnect_attempts = 999
@@ -341,11 +345,10 @@ class BBSBotCLI:
             print(f"{Fore.RED}Error sending message: {e}{Style.RESET_ALL}")
 
     async def read_bbs_output(self):
-        """Read and display BBS output with reconnection logic"""
+        """Read and display BBS output with improved message handling"""
         while not self.stop_event.is_set():
             try:
                 if not self.bot.connected:
-                    # Attempt reconnection if connection was lost
                     if await self.attempt_reconnection():
                         continue
                     else:
@@ -358,19 +361,16 @@ class BBSBotCLI:
                         break
                     continue
 
-                # Check for cleanup maintenance message
-                if "finish up and log off." in data.lower():
-                    await self.handle_cleanup_maintenance()
-                    continue
-
-                # Display and process the data
-                print(f"{Fore.WHITE}{data}{Style.RESET_ALL}", end='')
+                # Print received data with proper color
+                print(f"{Fore.CYAN}{data}{Style.RESET_ALL}", end='')
                 sys.stdout.flush()
                 
                 try:
+                    # Let the bot process the data - it will use our overridden send methods
                     self.bot.process_data_chunk(data)
                 except Exception as e:
                     self.logger.error(f"Error processing data: {e}")
+                    self.logger.exception("Full traceback:")
 
             except Exception as e:
                 print(f"{Fore.RED}Error reading from BBS: {e}{Style.RESET_ALL}")
@@ -485,6 +485,63 @@ class BBSBotCLI:
         except Exception as e:
             print(f"{Fore.RED}Error in sync_send_full_message: {e}{Style.RESET_ALL}")
             self.logger.exception("Error in sync_send_full_message")
+
+    def sync_send_private_message(self, username, message):
+        """Synchronous wrapper for sending private (whispered) messages"""
+        if not message:
+            return
+            
+        async def wrapped_send():
+            chunks = self.bot.chunk_message(message, 250)
+            for chunk in chunks:
+                full_message = f"Whisper to {username} {chunk}"
+                await self.send_message(full_message + "\r\n")
+                await asyncio.sleep(0.1)
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(wrapped_send(), self.loop)
+            future.result(timeout=3)
+        except Exception as e:
+            print(f"{Fore.RED}Error in sync_send_private_message: {e}{Style.RESET_ALL}")
+            self.logger.exception("Error in sync_send_private_message")
+
+    def sync_send_page_response(self, username, module_or_channel, message):
+        """Synchronous wrapper for sending page responses"""
+        if not message:
+            return
+            
+        async def wrapped_send():
+            chunks = self.bot.chunk_message(message, 250)
+            for chunk in chunks:
+                full_message = f"/P {username} {chunk}"
+                await self.send_message(full_message + "\r\n")
+                await asyncio.sleep(0.1)
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(wrapped_send(), self.loop)
+            future.result(timeout=3)
+        except Exception as e:
+            print(f"{Fore.RED}Error in sync_send_page_response: {e}{Style.RESET_ALL}")
+            self.logger.exception("Error in sync_send_page_response")
+
+    def sync_send_direct_message(self, username, message):
+        """Synchronous wrapper for sending direct messages"""
+        if not message:
+            return
+            
+        async def wrapped_send():
+            chunks = self.bot.chunk_message(message, 250)
+            for chunk in chunks:
+                full_message = f">{username} {chunk}"
+                await self.send_message(full_message + "\r\n")
+                await asyncio.sleep(0.1)
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(wrapped_send(), self.loop)
+            future.result(timeout=3)
+        except Exception as e:
+            print(f"{Fore.RED}Error in sync_send_direct_message: {e}{Style.RESET_ALL}")
+            self.logger.exception("Error in sync_send_direct_message")
 
     async def send_full_message(self, message):
         """Send a full message to the BBS"""
