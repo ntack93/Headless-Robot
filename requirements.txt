@@ -1,0 +1,9 @@
+requests
+openai
+boto3
+telnetlib3
+yt-dlp
+pytube
+pydub
+selenium
+beautifulsoup4

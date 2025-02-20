@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!-- ...existing code... -->
+    <style>
+        #favoritesWindow {
+            display: none;
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: white;
+            border: 1px solid #ccc;
+            padding: 20px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+        #favoritesWindow h2 {
+            margin-top: 0;
+        }
+        #favoritesWindow ul {
+            list-style-type: none;
+            padding: 0;
+        }
+        #favoritesWindow li {
+            padding: 5px;
+            cursor: pointer;
+        }
+        #favoritesWindow li.selected {
+            background-color: #ddd;
+        }
+        .context-menu {
+            position: absolute;
+            background-color: #fff;
+            border: 1px solid #ccc;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            z-index: 1000;
+        }
+        .context-menu div {
+            padding: 5px 10px;
+            cursor: pointer;
+        }
+        .context-menu div:hover {
+            background-color: #ddd;
+        }
+    </style>
+</head>
+<body>
+    <!-- ...existing code... -->
+    <button id="toggleModeButton">Toggle Mode</button>
+    <button id="favoritesButton">Favorites</button>
+
+    <!-- Config frame -->
+    <div id="configFrame">
+        <!-- ...existing code... -->
+        <button id="settingsButton">Settings</button>
+        <!-- ...existing code... -->
+    </div>
+
+    <!-- Mud Mode checkbox -->
+    <input type="checkbox" id="mudModeCheckbox"> Mud Mode
+
+    <!-- Host input field -->
+    <input type="text" id="hostInput" placeholder="Enter BBS Host">
+
+    <!-- Username frame -->
+    <div id="usernameFrame">
+        <label for="usernameInput">Username:</label>
+        <input type="text" id="usernameInput" placeholder="Enter Username">
+        <input type="checkbox" id="rememberUsername"> Remember
+        <button id="sendUsernameButton" onclick="sendMessage('username')">Send</button>
+    </div>
+
+    <!-- Password frame -->
+    <div id="passwordFrame">
+        <label for="passwordInput">Password:</label>
+        <input type="password" id="passwordInput" placeholder="Enter Password">
+        <input type="checkbox" id="rememberPassword"> Remember
+        <button id="sendPasswordButton" onclick="sendMessage('password')">Send</button>
+    </div>
+
+    <!-- Favorites window -->
+    <div id="favoritesWindow">
+        <h2>Favorite BBS Addresses</h2>
+        <ul id="favoritesList"></ul>
+        <input type="text" id="newFavoriteInput" placeholder="Enter new address">
+        <button id="addFavoriteButton">Add</button>
+        <button id="removeFavoriteButton">Remove</button>
+        <button id="closeFavoritesButton">Close</button>
+    </div>
+
+    <!-- Settings window -->
+    <div id="settingsWindow">
+        <!-- Add input fields for settings here -->
+        <input type="text" id="openaiApiKey" placeholder="OpenAI API Key">
+        <input type="text" id="weatherApiKey" placeholder="Weather API Key">
+        <input type="text" id="youtubeApiKey" placeholder="YouTube API Key">
+        <input type="text" id="googleCseApiKey" placeholder="Google CSE API Key">
+        <input type="text" id="googleCseCx" placeholder="Google CSE ID (cx)">
+        <input type="text" id="newsApiKey" placeholder="News API Key">
+        <input type="text" id="googlePlacesApiKey" placeholder="Google Places API Key">
+        <input type="text" id="pexelsApiKey" placeholder="Pexels API Key">
+        <input type="text" id="alphaVantageApiKey" placeholder="Alpha Vantage API Key">
+        <input type="text" id="coinmarketcapApiKey" placeholder="CoinMarketCap API Key">
+        <input type="text" id="giphyApiKey" placeholder="Giphy API Key"> <!-- Ensure Giphy API Key input is visible -->
+        <input type="text" id="fontName" placeholder="Font Name">
+        <input type="text" id="fontSize" placeholder="Font Size">
+        <input type="checkbox" id="logonAutomation"> Logon Automation
+        <input type="checkbox" id="autoLogin"> Auto Login
+        <button id="splitViewButton">Split View</button> <!-- Ensure Split View button is visible -->
+        <button id="teleconferenceButton">Teleconference</button> <!-- Ensure Teleconference button is visible -->
+    </div>
+
+    <!-- BBS input field -->
+    <input type="text" id="inputBox" placeholder="Enter message">
+
+    <div id="mainContainer">
+        <!-- Main content will be here -->
+    </div>
+
+    <!-- ...existing code... -->
+    <script src="ui.js"></script>
+</body>
+</html>
