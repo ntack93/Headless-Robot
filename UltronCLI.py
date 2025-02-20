@@ -186,8 +186,8 @@ class BBSBotCLI:
             return
         future = asyncio.run_coroutine_threadsafe(self.send_full_message(message), self.loop)
         try:
-            # Wait for the message to be sent with a timeout
-            future.result(timeout=10)
+            # Reduce timeout from 10 to 3 seconds
+            future.result(timeout=3)
         except Exception as e:
             print(f"{Fore.RED}Error in sync_send_full_message: {e}{Style.RESET_ALL}")
 
@@ -218,14 +218,14 @@ class BBSBotCLI:
             if current_chunk:
                 chunks.append(' '.join(current_chunk))
             
-            # Send each chunk
+            # Send each chunk with minimal delay
             for chunk in chunks:
                 if chunk.strip():  # Only send non-empty chunks
                     full_message = f"{chunk}\r\n"
                     self.bot.writer.write(full_message)
                     await self.bot.writer.drain()
                     print(f"{Fore.YELLOW}-> {chunk}{Style.RESET_ALL}")  # Show outgoing message
-                    await asyncio.sleep(0.5)  # Small delay between chunks
+                    await asyncio.sleep(0.1)  # Reduced delay between chunks from 0.5 to 0.1
         except Exception as e:
             print(f"{Fore.RED}Error sending message: {e}{Style.RESET_ALL}")
 
