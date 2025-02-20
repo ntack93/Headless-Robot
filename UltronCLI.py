@@ -4,31 +4,178 @@ import logging
 import argparse
 import signal
 import importlib.util
-import telnetlib3  # Add this import
+import telnetlib3
 from colorama import init, Fore, Style
-import tkinter as tk  # Add this for creating a dummy root
+import os
 
-# Initialize colorama
-init()
+# Initialize colorama for Linux
+init(strip=False)
+
+class MockTk:
+    """Minimal mock Tkinter for headless operation"""
+    def __init__(self):
+        self._w = '.'
+        self.children = {}
+        self._title = ""
+        
+    def withdraw(self): pass
+    def update(self): pass
+    def after(self, *args): pass
+    def mainloop(self): pass
+    def winfo_exists(self): return True
+    def configure(self, **kwargs): pass
+    def title(self, text=""): 
+        self._title = text
+    def destroy(self): pass
+    def get_title(self): 
+        return self._title
+    def nametowidget(self, name): return self
+
+class MockWidget:
+    """Base mock widget class"""
+    def __init__(self, *args, **kwargs): pass
+    def pack(self, *args, **kwargs): pass
+    def grid(self, *args, **kwargs): pass
+    def configure(self, *args, **kwargs): pass
+    def bind(self, *args, **kwargs): pass
+    def yview(self, *args): pass
+    def see(self, *args): pass
+    def set(self, *args): pass  # Add set method for scrollbars
+
+class MockText(MockWidget):
+    """Mock Text widget with scrolling support"""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._text = ""
+        self._current_tags = []
+        
+    def configure(self, *args, **kwargs): pass
+    def pack(self, *args, **kwargs): pass
+    def insert(self, index, text, *tags): 
+        self._text += text
+        self._current_tags = list(tags)
+    def see(self, *args): pass
+    def tag_configure(self, *args, **kwargs): pass
+    def get(self, start='1.0', end='end'): return self._text
+    def yview(self, *args): pass
+    def yview_moveto(self, fraction): pass
+    def yview_scroll(self, number, what): pass
+
+class MockVar:
+    """Mock variable class for Tkinter variables"""
+    def __init__(self, *args, **kwargs):
+        self._value = kwargs.get('value', None)
+        if not self._value and args:
+            self._value = args[0] if args else None
+    
+    def set(self, value): 
+        self._value = value
+    
+    def get(self): 
+        return self._value
+    
+    def trace_add(self, *args, **kwargs): pass
+    def trace_remove(self, *args, **kwargs): pass
+    def trace(self, *args, **kwargs): pass
+
+class MockMenu:
+    """Mock Menu class for context menus"""
+    def __init__(self, parent=None, **kwargs):
+        self.parent = parent
+        self.items = []
+
+    def add_command(self, **kwargs): pass
+    def add_separator(self, **kwargs): pass
+    def delete(self, *args): pass
+    def entryconfigure(self, *args, **kwargs): pass
+    def tk_popup(self, *args, **kwargs): pass
+    def post(self, *args, **kwargs): pass
+    def unpost(self): pass
+
+class MockScrollbar(MockWidget):
+    """Mock Scrollbar with set method"""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._first = 0.0
+        self._last = 1.0
+    
+    def set(self, first, last):
+        self._first = float(first)
+        self._last = float(last)
+    
+    def get(self):
+        return self._first, self._last
 
 class BBSBotCLI:
     def __init__(self, args):
         self.setup_logging()
+
+        # Create comprehensive mock Tkinter environment
+        mock_tkinter = type('MockTkinter', (), {
+            'Tk': MockTk,
+            'Frame': type('Frame', (MockWidget,), {}),
+            'Text': MockText,  # Use our enhanced MockText class
+            'Label': type('Label', (MockWidget,), {}),
+            'Entry': type('Entry', (MockWidget,), {}),
+            'Button': type('Button', (MockWidget,), {}),
+            'Checkbutton': type('Checkbutton', (MockWidget,), {}),
+            'Scrollbar': MockScrollbar,  # Use dedicated MockScrollbar class
+            'Menu': MockMenu,  # Add the Menu class
+            'StringVar': lambda master=None, value=None, name=None: MockVar(value=value),
+            'IntVar': lambda master=None, value=None, name=None: MockVar(value=value),
+            'BooleanVar': lambda master=None, value=None, name=None: MockVar(value=value),
+            'NORMAL': 'normal',
+            'DISABLED': 'disabled',
+            'END': 'end',
+            'LEFT': 'left',
+            'RIGHT': 'right',
+            'TOP': 'top',
+            'BOTTOM': 'bottom',
+            'BOTH': 'both',
+            'X': 'x',
+            'Y': 'y',
+            'HORIZONTAL': 'horizontal',
+            'VERTICAL': 'vertical',
+            'W': 'w',
+            'E': 'e',
+            'N': 'n',
+            'S': 's',
+            'WORD': 'word',  # Add WORD constant
+            'CHAR': 'char',  # Add CHAR constant for completeness
+            'NONE': 'none',  # Add NONE constant for completeness
+        })
+
+        # Create mock ttk module with same widget set
+        mock_ttk = type('MockTtk', (), {
+            'Frame': type('Frame', (MockWidget,), {}),
+            'Label': type('Label', (MockWidget,), {}),
+            'Entry': type('Entry', (MockWidget,), {}),
+            'Button': type('Button', (MockWidget,), {}),
+            'Checkbutton': type('Checkbutton', (MockWidget,), {}),
+            'Scrollbar': MockScrollbar,  # Use dedicated MockScrollbar class here too
+            'LabelFrame': type('LabelFrame', (MockWidget,), {}),
+            'Combobox': type('Combobox', (MockWidget,), {
+                'set': lambda *a: None,
+                'get': lambda *a: '',
+                'current': lambda *a: None
+            })
+        })
+
+        # Add ttk module to mock tkinter
+        mock_tkinter.ttk = mock_ttk
+
+        # Install the mock tkinter
+        sys.modules['tkinter'] = mock_tkinter
         
-        # Import UltronPreAlpha
-        spec = importlib.util.spec_from_file_location(
-            "UltronPreAlpha", 
-            "UltronPreAlpha.py"
-        )
+        # Import UltronPreAlpha using platform-independent path
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        ultron_path = os.path.join(script_dir, "UltronPreAlpha.py")
+        spec = importlib.util.spec_from_file_location("UltronPreAlpha", ultron_path)
         ultron_module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(ultron_module)
         
-        # Create a dummy Tkinter root that won't be shown
-        dummy_root = tk.Tk()
-        dummy_root.withdraw()  # Hide the window
-        
-        # Create instance of the original bot with dummy root
-        self.bot = ultron_module.BBSBotApp(dummy_root)
+        # Create instance of the original bot with mock Tk
+        self.bot = ultron_module.BBSBotApp(MockTk())
         
         # Store reference to the bot's command processor
         self.command_processor = getattr(self.bot, 'command_processor', None)
@@ -50,11 +197,13 @@ class BBSBotCLI:
         self.bot.send_full_message = self.sync_send_full_message
 
     def setup_logging(self):
+        """Configure logging with platform-independent paths"""
+        log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'bbs_bot.log')
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
             handlers=[
-                logging.FileHandler('bbs_bot.log'),
+                logging.FileHandler(log_path),
                 logging.StreamHandler(sys.stdout)
             ]
         )
@@ -229,26 +378,55 @@ class BBSBotCLI:
         except Exception as e:
             print(f"{Fore.RED}Error sending message: {e}{Style.RESET_ALL}")
 
+    async def disconnect(self):
+        """Safely disconnect from the BBS."""
+        if self.bot.connected:
+            try:
+                # Send a graceful quit message if needed
+                try:
+                    await self.send_message("quit")
+                except:
+                    pass
+
+                # Close the writer
+                if self.bot.writer:
+                    self.bot.writer.close()
+                    try:
+                        await self.bot.writer.wait_closed()
+                    except:
+                        pass
+
+                # Clear the references
+                self.bot.reader = None
+                self.bot.writer = None
+                self.bot.connected = False
+            except Exception as e:
+                self.logger.error(f"Error during disconnect: {e}")
+
+    async def shutdown(self, sig):
+        """Handle graceful shutdown"""
+        self.logger.info(f"Received signal {sig.name}, shutting down")
+        self.stop_event.set()
+        
+        # Use our own disconnect method instead of the bot's
+        await self.disconnect()
+        
+        try:
+            self.loop.stop()
+        except:
+            pass
+
     def run(self):
         """Main entry point"""
-        def signal_handler(sig, frame):
-            print("\nShutting down gracefully...")
-            self.stop_event.set()
-            if hasattr(self.bot, 'disconnect'):
-                asyncio.run_coroutine_threadsafe(self.bot.disconnect(), self.loop)
-            self.loop.stop()
-            sys.exit(0)
-
-        signal.signal(signal.SIGINT, signal_handler)
+        # Handle Linux signals
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT):
+            self.loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(self.shutdown(s)))
 
         try:
             self.loop.run_until_complete(self.main_loop())
-        except KeyboardInterrupt:
-            pass
+        except Exception as e:
+            self.logger.error(f"Error in main loop: {e}")
         finally:
-            if self.bot.connected:
-                if hasattr(self.bot, 'disconnect'):
-                    self.loop.run_until_complete(self.bot.disconnect())
             self.loop.close()
 
 def main():
@@ -256,6 +434,7 @@ def main():
     parser.add_argument('--host', help='BBS host address')
     parser.add_argument('--port', type=int, help='BBS port number')
     parser.add_argument('--config', help='Path to config file')
+    parser.add_argument('--no-gui', action='store_true', help='Run without GUI dependencies')
     
     args = parser.parse_args()
     
