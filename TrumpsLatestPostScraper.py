@@ -2,9 +2,10 @@
 
 import sys
 import time
+import os
 from selenium import webdriver
-from selenium.webdriver.edge.options import Options
-from selenium.webdriver.edge.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 
 # Wait conditions
 from selenium.webdriver.common.by import By
@@ -20,39 +21,61 @@ sys.stdout.reconfigure(encoding='utf-8')
 def download_truthsocial_page(output_file):
     """
     Downloads the fully rendered HTML of Donald Trump's Truth Social page,
-    using Selenium and Edge. It waits for the first post to appear and
-    performs multiple scrolls to ensure content is loaded.
+    using Chrome in headless mode on Linux.
     """
-    edge_options = Options()
-    edge_service = Service(r"C:\WebDrivers\msedgedriver.exe")
-    driver = webdriver.Edge(service=edge_service, options=edge_options)
-
+    chrome_options = Options()
+    chrome_options.add_argument("--headless=new")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-extensions")
+    chrome_options.add_argument("--disable-notifications")
+    chrome_options.add_argument("--disable-infobars")
+    # Add user agent to appear more like a real browser
+    chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36")
+    
+    chrome_service = Service('/usr/bin/chromedriver')
+    
     try:
+        driver = webdriver.Chrome(service=chrome_service, options=chrome_options)
+        driver.set_page_load_timeout(30)  # Set page load timeout
+        
         print("Navigating to Trump's Truth Social page...")
         driver.get("https://truthsocial.com/@realDonaldTrump")
 
-        wait = WebDriverWait(driver, 60)
-
-        print("Waiting for the 'Truths' tab...")
-        truths_tab = wait.until(
-            EC.element_to_be_clickable((By.XPATH, "//button[normalize-space()='Truths']"))
-        )
-
-        # JS click to avoid overlays intercepting
-        print("Force-clicking 'Truths' tab via JS...")
-        driver.execute_script("arguments[0].click();", truths_tab)
-
-        print("Waiting for first post...")
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-testid='status']")))
-
+        # Wait for any element that indicates the page has loaded
+        wait = WebDriverWait(driver, 30)
+        print("Waiting for page to load...")
+        
+        # Try different selectors in sequence
+        selectors = [
+            (By.CSS_SELECTOR, "div[data-testid='status']"),
+            (By.CSS_SELECTOR, ".status"),
+            (By.XPATH, "//div[contains(@class, 'status')]"),
+            (By.TAG_NAME, "article")
+        ]
+        
+        for by, selector in selectors:
+            try:
+                wait.until(EC.presence_of_element_located((by, selector)))
+                print(f"Page loaded successfully using selector: {selector}")
+                break
+            except:
+                continue
+        
         # Multiple scrolls with longer delays
         print("Scrolling to load more content...")
         for _ in range(3):
-            ActionChains(driver).scroll_by_amount(0, 500).perform()
-            time.sleep(2)  # Wait 2 seconds between scrolls
+            try:
+                driver.execute_script("window.scrollBy(0, 1000);")
+                time.sleep(3)  # Increased wait time
+            except Exception as e:
+                print(f"Scroll error: {e}")
+                break
 
         # Final wait to ensure everything is loaded
-        time.sleep(3)
+        time.sleep(5)  # Increased final wait
 
         print("Retrieving page source...")
         page_source = driver.page_source
@@ -61,6 +84,9 @@ def download_truthsocial_page(output_file):
 
         print(f"Download complete! HTML saved to: {output_file}")
 
+    except Exception as e:
+        print(f"Error during page download: {e}")
+        raise
     finally:
         driver.quit()
 
@@ -97,21 +123,18 @@ def get_latest_post(html_file):
 
 if __name__ == "__main__":
     """
-    1.2️⃣ Main script flow:
-    - Download the page to a local file
-    - Parse that file
-    - Print Trump's latest post
+    Main script flow
     """
+    # Use $HOME environment variable for Linux compatibility
+    output_file = os.path.expanduser("~/trumphtml.html")
 
-    output_file = r"C:\Users\Noah\OneDrive\Documents\bbschatbot1.0\trumphtml.html"
-
-    # 1.3️⃣ Download the page
+    # Download the page
     download_truthsocial_page(output_file)
 
-    # 1.4️⃣ Scrape the downloaded HTML
+    # Scrape the downloaded HTML
     post_content, post_time = get_latest_post(output_file)
 
-    # 1.5️⃣ Print result
+    # Print result
     if post_content and post_time:
         print(f"Latest Post: {post_content}")
         print(f"Posted on: {post_time}")
