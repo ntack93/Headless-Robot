@@ -928,10 +928,7 @@ class BBSBotApp:
             if self.no_spam_mode.get():
                 self.append_terminal_text(f"Ignored public trigger due to No Spam Mode: {message}\n", "normal")
                 return
-            if message.startswith("!said"):
-                self.handle_said_command(username, message)
-            else:
-                self.store_public_message(username, message)
+            if message.startswith("!"):
                 self.handle_public_trigger(username, message)
 
         # Check for user-specific triggers
@@ -1025,6 +1022,18 @@ class BBSBotApp:
             episode = parts[2]
             self.handle_pod_command(username, show, episode)
             return
+        elif "!msg" in message:
+            parts = message.split(maxsplit=2)
+            if len(parts) < 3:
+                response = "Usage: !msg <username> <message>"
+            else:
+                recipient = parts[1]
+                msg_content = parts[2]
+                # Save the message
+                self.save_pending_message(recipient, username, msg_content)
+                # Whisper confirmation to sender
+                self.send_private_message(username, f"Message for {recipient} saved. They will receive it when next seen.")
+                return  # Return early to avoid the default send_private_message at the end
         elif "!mail" in message:
             self.handle_mail_command(message)
         elif "!radio" in message:
@@ -2567,7 +2576,8 @@ class BBSBotApp:
             sender = msg['sender']
             message = msg['message']
             timestamp = msg['timestamp']
-            self.send_direct_message(username, f"Message from {sender}: {message}")
+            # Use send_private_message instead of send_direct_message
+            self.send_private_message(username, f"Message from {sender}: {message}")
             self.delete_pending_message(username, timestamp)
 
     def load_no_spam_state(self):
@@ -2750,6 +2760,15 @@ class BBSBotApp:
             self.handle_blaz_command(call_letters)
         elif "!musk" in message:
             response = self.get_musk_post()
+        elif "!msg" in message:
+            parts = message.split(maxsplit=2)
+            if len(parts) < 3:
+                response = "Usage: !msg <username> <message>"
+            else:
+                recipient = parts[1]
+                msg_content = parts[2]
+                self.handle_msg_command(recipient, msg_content, username)
+                return  # Return early as handle_msg_command sends its own response
 
         if response:
             self.send_full_message(response)
