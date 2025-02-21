@@ -471,6 +471,10 @@ class BBSBotCLI:
             
             # Send teleconference command
             await self.send_message("/go tele")
+            await asyncio.sleep(2)  # Wait 2 seconds
+            
+            # Send join command
+            await self.send_message("join majorlink")
             
             self.login_complete = True
             print(f"{Fore.GREEN}Login sequence completed{Style.RESET_ALL}")
