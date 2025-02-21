@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import asyncio
 import sys
 import logging
@@ -181,9 +183,9 @@ class BBSBotCLI:
         # Store reference to the bot's command processor
         self.command_processor = getattr(self.bot, 'command_processor', None)
         
-        # Override connection settings
-        self.host = args.host or input("Enter BBS hostname: ").strip()
-        self.port = args.port or int(input("Enter port number [23]: ").strip() or "23")
+        # Override connection settings with defaults
+        self.host = args.host or "bbs.acsbbs.com.br"  # Set default host
+        self.port = args.port or 23  # Set default port
         self.bot.host = self.host
         self.bot.port = self.port
         
@@ -210,6 +212,10 @@ class BBSBotCLI:
         # Add keep-alive attributes
         self.keep_alive_stop_event = asyncio.Event()
         self.keep_alive_task = None
+
+        # Enable auto-login by default
+        self.auto_login_enabled = MockVar(value=True)  # Set auto-login to True
+        self.logon_automation_enabled = MockVar(value=True)  # Set logon automation to True
 
     def setup_logging(self):
         """Configure logging with platform-independent paths"""
@@ -243,6 +249,8 @@ class BBSBotCLI:
                 self.logger.info(f"Connected to {self.host}:{self.port}")
                 # Start keep-alive when connection is established
                 self.start_keep_alive()
+                # Add automatic login sequence
+                await self.perform_login_sequence()
                 return True
             else:
                 self.logger.error("Connection closed immediately after establishing")
@@ -275,7 +283,8 @@ class BBSBotCLI:
             self.keep_alive_task.cancel()
 
     async def main_loop(self):
-        """Main application loop"""
+        """Main application loop with automatic connection"""
+        # Start connection immediately
         if not await self.connect():
             print(f"{Fore.RED}Failed to connect to {self.host}:{self.port}{Style.RESET_ALL}")
             return
@@ -356,18 +365,27 @@ class BBSBotCLI:
 
                 data = await self.bot.reader.read(4096)
                 if not data:
-                    print(f"{Fore.RED}Connection lost. Attempting to reconnect...{Style.RESET_ALL}")
-                    if not await self.attempt_reconnection():
-                        break
+                    print(f"{Fore.RED}Connection dropped. Initiating cleanup reconnection...{Style.RESET_ALL}")
+                    await self.handle_cleanup_maintenance()
+                    continue
+
+                # Handle both string and bytes data
+                data_str = data if isinstance(data, str) else data.decode('utf-8', errors='ignore')
+
+                # Check for cleanup message
+                if "finish up and log off." in data_str.lower():
+                    print(f"{Fore.YELLOW}Cleanup maintenance detected!{Style.RESET_ALL}")
+                    await self.send_message("=x")
+                    await self.handle_cleanup_maintenance()
                     continue
 
                 # Print received data with proper color
-                print(f"{Fore.CYAN}{data}{Style.RESET_ALL}", end='')
+                print(f"{Fore.CYAN}{data_str}{Style.RESET_ALL}", end='')
                 sys.stdout.flush()
                 
                 try:
                     # Let the bot process the data - it will use our overridden send methods
-                    self.bot.process_data_chunk(data)
+                    self.bot.process_data_chunk(data_str)
                 except Exception as e:
                     self.logger.error(f"Error processing data: {e}")
                     self.logger.exception("Full traceback:")
@@ -381,16 +399,26 @@ class BBSBotCLI:
 
     async def handle_cleanup_maintenance(self):
         """Handle cleanup maintenance by disconnecting, waiting, and reconnecting."""
-        print(f"{Fore.YELLOW}Cleanup maintenance detected. Disconnecting for {self.cleanup_duration} seconds...{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}Cleanup maintenance detected. Waiting 5 minutes...{Style.RESET_ALL}")
         
         # Disconnect gracefully
         await self.disconnect()
         
-        # Wait for cleanup period
-        await asyncio.sleep(self.cleanup_duration)
+        # Wait 5 minutes
+        await asyncio.sleep(300)  # 5 minutes
         
-        # Start reconnection attempts
-        await self.attempt_reconnection(is_cleanup=True)
+        # Start reconnection attempts with proper retry logic
+        self.reconnect_attempts = 0
+        while self.reconnect_attempts < self.max_reconnect_attempts:
+            self.reconnect_attempts += 1
+            print(f"{Fore.YELLOW}Reconnection attempt {self.reconnect_attempts}/{self.max_reconnect_attempts}...{Style.RESET_ALL}")
+            
+            if await self.connect():
+                return True
+                
+            await asyncio.sleep(3)  # Wait 3 seconds between attempts
+        
+        return False
 
     async def attempt_reconnection(self, is_cleanup=False):
         """Attempt to reconnect to the BBS with retry logic."""
@@ -420,31 +448,36 @@ class BBSBotCLI:
     async def perform_login_sequence(self):
         """Perform the full login sequence."""
         try:
-            # Load credentials
+            # Initial wait after connection
+            await asyncio.sleep(5)
+            
+            # Send initial ENTER
+            await self.send_message("\r\n")
+            await asyncio.sleep(5)
+            
+            # Load and send username
             username = self.load_username()
+            await self.send_message(username)
+            await asyncio.sleep(5)
+            
+            # Load and send password
             password = self.load_password()
-            
-            # Send username
-            await self.send_message(username + "\r\n")
-            await asyncio.sleep(2)
-            
-            # Send password
-            await self.send_message(password + "\r\n")
+            await self.send_message(password)
             await asyncio.sleep(1)
             
-            # Send three Enter keystrokes
-            for _ in range(3):
-                await self.send_message("\r\n")
-                await asyncio.sleep(1)
+            # Send ENTER after password
+            await self.send_message("\r\n")
+            await asyncio.sleep(1)
             
             # Send teleconference command
-            await self.send_message("/go tele\r\n")
+            await self.send_message("/go tele")
             
             self.login_complete = True
             print(f"{Fore.GREEN}Login sequence completed{Style.RESET_ALL}")
             
         except Exception as e:
             print(f"{Fore.RED}Error during login sequence: {e}{Style.RESET_ALL}")
+            self.logger.exception("Login sequence error")
             self.login_complete = False
 
     def load_username(self):
@@ -619,46 +652,72 @@ class BBSBotCLI:
         # Cancel all tasks
         for task in self.tasks:
             if not task.done():
-                task.cancel()
+                try:
+                    task.cancel()
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    self.logger.error(f"Error canceling task: {e}")
         
-        # Wait for tasks to complete with timeout
+        # Ensure disconnect happens
         try:
-            await asyncio.wait(self.tasks, timeout=5)
-        except asyncio.CancelledError:
-            pass
+            await self.disconnect()
+        except Exception as e:
+            self.logger.error(f"Error during disconnect: {e}")
         
-        # Use our own disconnect method
-        await self.disconnect()
+        # Stop the event loop
+        self.loop.stop()
 
     def run(self):
         """Main entry point with improved shutdown handling"""
-        # Handle Linux signals
-        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT):
+        def handle_sigint():
+            self.logger.info("Received SIGINT, initiating shutdown")
+            asyncio.create_task(self.shutdown(signal.SIGINT))
+            
+        # Set up signal handlers
+        for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
             self.loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(self.shutdown(s)))
+        
+        # Special handling for SIGINT (Ctrl+C)
+        self.loop.add_signal_handler(signal.SIGINT, handle_sigint)
 
         try:
             self.loop.run_until_complete(self.main_loop())
+        except KeyboardInterrupt:
+            self.logger.info("KeyboardInterrupt received")
         except Exception as e:
             self.logger.error(f"Error in main loop: {e}")
         finally:
             # Cancel any pending tasks
             pending = asyncio.all_tasks(self.loop)
             for task in pending:
-                task.cancel()
+                if not task.done():
+                    task.cancel()
             
-            # Run loop until tasks complete
+            # Run loop until tasks complete with timeout
             try:
-                self.loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-            except asyncio.CancelledError:
-                pass
+                self.loop.run_until_complete(
+                    asyncio.wait_for(
+                        asyncio.gather(*pending, return_exceptions=True),
+                        timeout=5
+                    )
+                )
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                self.logger.warning("Some tasks were not completed during shutdown")
+            except Exception as e:
+                self.logger.error(f"Error during shutdown: {e}")
             
-            # Clean up the loop
+            # Clean up
             try:
                 self.loop.run_until_complete(self.loop.shutdown_asyncgens())
             except Exception as e:
                 self.logger.error(f"Error shutting down async generators: {e}")
             
-            self.loop.close()
+            try:
+                self.loop.close()
+            except Exception as e:
+                self.logger.error(f"Error closing event loop: {e}")
 
     async def handle_direct_message(self, username, message):
         """Handle direct messages by interpreting them as chat queries."""
@@ -694,8 +753,8 @@ class BBSBotCLI:
 
 def main():
     parser = argparse.ArgumentParser(description='BBS Chatbot CLI')
-    parser.add_argument('--host', help='BBS host address')
-    parser.add_argument('--port', type=int, help='BBS port number')
+    parser.add_argument('--host', help='BBS host address', default="bbs.acsbbs.com.br")
+    parser.add_argument('--port', type=int, help='BBS port number', default=23)
     parser.add_argument('--config', help='Path to config file')
     parser.add_argument('--no-gui', action='store_true', help='Run without GUI dependencies')
     
@@ -703,9 +762,17 @@ def main():
     
     print("BBS Chatbot CLI")
     print("---------------")
+    print(f"Connecting to {args.host}:{args.port}...")
     
-    bot = BBSBotCLI(args)
-    bot.run()
+    try:
+        bot = BBSBotCLI(args)
+        bot.run()
+    except KeyboardInterrupt:
+        print("\nShutdown requested via Ctrl+C")
+    except Exception as e:
+        print(f"Fatal error: {e}")
+    finally:
+        print("Shutdown complete")
 
 if __name__ == "__main__":
     main()

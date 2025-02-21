@@ -713,58 +713,84 @@ class BBSBotApp:
         Accumulate data in self.partial_line.
         Unify carriage returns, split on newline, parse triggers for complete lines.
         """
-        # Replace all \r\n with \n, then replace remaining \r with \n.
         data = data.replace('\r\n', '\n').replace('\r', '\n')
-
-        # Accumulate into partial_line
         self.partial_line += data
-
-        # Split on \n to get complete lines
         lines = self.partial_line.split("\n")
 
-        # Process all but the last entry; that last might be incomplete
         for line in lines[:-1]:
             self.append_terminal_text(line + "\n", "normal")
             print(f"Incoming line: {line}")  # Log each incoming line
-            self.parse_incoming_triggers(line)
 
-            # If line contains '@', it might be part of the user list
-            if "@" in line:
-                self.user_list_buffer.append(line)
+            # Remove ANSI codes for easier parsing
+            ansi_escape_regex = re.compile(r'\x1b\[(.*?)m')
+            clean_line = ansi_escape_regex.sub('', line)
 
-            # If line ends with "are here with you." or "is here with you.", parse the entire buffer
-            if re.search(r'(is|are) here with you\.$', line.strip()):
-                if line not in self.user_list_buffer:
-                    self.user_list_buffer.append(line)
-                self.update_chat_members(self.user_list_buffer)
-                self.user_list_buffer = []
+            # Always process the !nospam command regardless of mode
+            if "!nospam" in clean_line:
+                match = re.match(r'From (.+?): (.+)', clean_line)
+                if match and match.group(1).lower() != "ultron":  # Ensure it's not from the bot itself
+                    self.no_spam_mode.set(not self.no_spam_mode.get())
+                    state = "enabled" if self.no_spam_mode.get() else "disabled"
+                    self.append_terminal_text(f"[System] No Spam Mode has been {state}.\n", "normal")
+                    self.save_no_spam_state()
+                    continue
 
-            # Check for user joining message
-            if line.strip() == ":***":
-                self.previous_line = ":***"
-            elif self.previous_line == ":***" and re.match(r'(.+?) just joined this channel!', line.strip()):
-                username = re.match(r'(.+?) just joined this channel!', line.strip()).group(1)
-                if self.auto_greeting_enabled:
-                    self.handle_user_greeting(username)
-                self.previous_line = ""
+            # Extract message type and content
+            is_whisper = re.match(r'From (.+?) \(whispered\): (.+)', clean_line)
+            is_page = re.match(r'(.+?) is paging you (from|via) (.+?): (.+)', clean_line)
+            is_direct = re.match(r'From (.+?) \(to you\): (.+)', clean_line)
+            is_public = re.match(r'From (.+?): (.+)', clean_line)
 
-        # The last piece may be partial if no trailing newline
+            # Skip messages from the bot itself
+            if is_public and is_public.group(1).lower() == "ultron":
+                continue
+
+            # When nospam is enabled, only process whispers and pages
+            if self.no_spam_mode.get() and not (is_whisper or is_page):
+                self.update_user_tracking(clean_line)
+                continue
+
+            # Process triggers based on message type
+            if is_whisper:
+                username, message = is_whisper.group(1), is_whisper.group(2)
+                self.handle_private_trigger(username, message)
+            elif is_page:
+                username, module, message = is_page.group(1), is_page.group(3), is_page.group(4)
+                self.handle_page_trigger(username, module, message)
+            elif is_direct and not self.no_spam_mode.get():
+                username, message = is_direct.group(1), is_direct.group(2)
+                self.handle_direct_message(username, message)
+            elif is_public and not self.no_spam_mode.get():
+                username, message = is_public.group(1), is_public.group(2)
+                self.store_public_message(username, message)
+                if message.startswith("!"):
+                    self.handle_public_trigger(username, message)
+
+            # Always update user tracking
+            self.update_user_tracking(clean_line)
+            self.previous_line = clean_line
+
         self.partial_line = lines[-1]
 
-        # Check for re-logon automation triggers
-        if "please finish up and log off." in data.lower():
-            self.handle_cleanup_maintenance()
-        if self.auto_login_enabled.get() or self.logon_automation_enabled.get():
-            if 'otherwise type "new": ' in data.lower() or 'type it in and press enter' in data.lower():
-                self.send_username()
-            elif 'enter your password: ' in data.lower():
-                self.send_password()
-            elif 'if you already have a user-id on this system, type it in and press enter. otherwise type "new":' in data.lower():
-                self.send_username()
-            elif 'greetings, ' in data.lower() and 'glad to see you back again.' in data.lower():
-                self.master.after(1000, self.send_teleconference_command)
-        elif '(n)onstop, (q)uit, or (c)ontinue?' in data.lower():
-            self.send_enter_keystroke()
+    def update_user_tracking(self, clean_line):
+        """Handle user tracking updates regardless of nospam mode."""
+        # Update chat members list
+        if "@" in clean_line:
+            self.user_list_buffer.append(clean_line)
+
+        if re.search(r'(is|are) here with you\.$', clean_line.strip()):
+            if (clean_line not in self.user_list_buffer) and (len(self.user_list_buffer) > 0):
+                self.user_list_buffer.append(clean_line)
+            self.update_chat_members(self.user_list_buffer)
+            self.user_list_buffer = []
+
+        # Update last seen times
+        if match := re.match(r'(.+?)@(.+?) just joined this channel!', clean_line):
+            username = match.group(1)
+            self.last_seen[username.lower()] = int(time.time())
+
+        # Handle previous line tracking
+        self.previous_line = clean_line
 
     def update_chat_members(self, lines_with_users):
         """
@@ -907,7 +933,6 @@ class BBSBotApp:
             else:
                 self.store_public_message(username, message)
                 self.handle_public_trigger(username, message)
-            return
 
         # Check for user-specific triggers
         if self.previous_line == ":***" and clean_line.startswith("->"):
@@ -2311,13 +2336,14 @@ class BBSBotApp:
         self.send_full_message(response)
 
     def get_seen_response(self, username):
-        """Return the last seen timestamp of a user."""
+        """Return the last seen timestamp of a user in GMT time."""
         username_lower = username.lower()
         last_seen_lower = {k.lower(): v for k, v in self.last_seen.items()}
 
         if username_lower in last_seen_lower:
             last_seen_time = last_seen_lower[username_lower]
-            last_seen_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_seen_time))
+            # Convert timestamp to GMT/UTC time
+            last_seen_str = time.strftime('%Y-%m-%d %H:%M:%S GMT', time.gmtime(last_seen_time))
             time_diff = int(time.time()) - last_seen_time
             hours, remainder = divmod(time_diff, 3600)
             minutes, seconds = divmod(remainder, 60)
@@ -2802,7 +2828,7 @@ class BBSBotApp:
     def get_trump_post(self):
         """Run the Trump post scraper script and return the latest post."""
         try:
-            script_path = "/home/cloudshell-user/files/HeadlessRobot/Headless-Robot/TrumpsLatestPostScraper.py"
+            script_path = "/home/ec2-user/Headless-Robot/TrumpsLatestPostScraper.py"
             command = [sys.executable, script_path]
             
             # Verify script exists before running
@@ -2940,7 +2966,7 @@ class BBSBotApp:
     def get_musk_post(self):
         """Run the Musk post scraper script and return the latest post."""
         try:
-            script_path = "/home/cloudshell-user/files/HeadlessRobot/Headless-Robot/MusksLatestPostScraper.py"
+            script_path = "/home/ec2-user/Headless-Robot/MusksLatestPostScraper.py"
             command = [sys.executable, script_path]
             
             # Verify script exists before running
