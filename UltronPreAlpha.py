@@ -3051,8 +3051,8 @@ class BBSBotApp:
             except requests.exceptions.RequestException as e:
                 return f"Error fetching picture: {str(e)}"
 
-    def handle_blaz_command(self, username, call_letters):
-        """Handle the !blaz command to provide the radio station's live broadcast link based on call letters."""
+    def handle_blaz_command(self, call_letters):
+        """Handle the !blaz command to provide radio station's live broadcast link."""
         radio_links = {
             "WPBG": "https://playerservices.streamtheworld.com/api/livestream-redirect/WPBGFM.mp3",
             "WSWT": "https://playerservices.streamtheworld.com/api/livestream-redirect/WSWTFM.mp3",
@@ -3064,13 +3064,10 @@ class BBSBotApp:
         
         if not call_letters:
             available_stations = ", ".join(sorted(radio_links.keys()))
-            response = f"Usage: !blaz <call_letters> | Available stations: {available_stations}"
-        else:
-            stream_link = radio_links.get(call_letters.upper(), "No matching radio station found.")
-            response = f"Listen to {call_letters.upper()} live: {stream_link}"
+            return f"Usage: !blaz <call_letters> | Available stations: {available_stations}"
         
-        # Send response using private_message since this is in handle_private_trigger
-        self.send_private_message(username, response)
+        stream_link = radio_links.get(call_letters.upper(), "No matching radio station found.")
+        return f"Listen to {call_letters.upper()} live: {stream_link}"
 
     def handle_radio_command(self, query):
         """Handle the !radio command to provide an internet radio station link based on the search query."""
