@@ -996,6 +996,89 @@ class BBSBotApp:
                 self.send_private_message(username, chunk)
             return
 
+
+
+
+
+
+        # Handle !seen command
+        elif command == "!seen":
+            if not query:
+                self.send_private_message(username, "Usage: !seen <username>")
+                return
+            response = self.get_seen_response(query)
+            self.send_private_message(username, response)
+            return
+
+        # Handle !polly command
+        elif command == "!polly":
+            parts = query.split(maxsplit=1)
+            if len(parts) < 2:
+                self.send_private_message(username, "Usage: !polly <voice> <text> - Voices are Ruth, Joanna, Danielle, Matthew, Stephen")
+                return
+            voice, text = parts
+            self.handle_polly_command(voice, text)
+            return
+
+        # Handle !mp3yt command
+        elif command == "!mp3yt":
+            if not query:
+                self.send_private_message(username, "Usage: !mp3yt <youtube_url>")
+                return
+            self.handle_ytmp3_command(query)
+            return
+
+        # Handle !greeting command
+        elif command == "!greeting":
+            self.auto_greeting_enabled = not self.auto_greeting_enabled
+            state = "enabled" if self.auto_greeting_enabled else "disabled"
+            self.send_private_message(username, f"Auto-greeting has been {state}.")
+            return
+
+        # Handle !timer command
+        elif command == "!timer":
+            parts = query.split(maxsplit=1)
+            if len(parts) < 2:
+                self.send_private_message(username, "Usage: !timer <value> <minutes or seconds>")
+                return
+            value, unit = parts
+            if not value.isdigit() or unit not in ["minutes", "seconds"]:
+                self.send_private_message(username, "Invalid timer value or unit. Please use numbers and specify either 'minutes' or 'seconds'.")
+                return
+            self.handle_timer_command(username, value, unit)
+            return
+
+        # Handle !blaz command
+        elif command == "!blaz":
+            if not query:
+                self.send_private_message(username, "Usage: !blaz <WIRL, WKZF, WMBD, WPBG, WSWT, WXCL>")
+                return
+            call_letters = query.strip().upper()
+            radio_links = {
+                "WPBG": "https://playerservices.streamtheworld.com/api/livestream-redirect/WPBGFM.mp3",
+                "WSWT": "https://playerservices.streamtheworld.com/api/livestream-redirect/WSWTFM.mp3",
+                "WMBD": "https://playerservices.streamtheworld.com/api/livestream-redirect/WMBDAM.mp3",
+                "WIRL": "https://playerservices.streamtheworld.com/api/livestream-redirect/WIRLAM.mp3",
+                "WXCL": "https://playerservices.streamtheworld.com/api/livestream-redirect/WXCLFM.mp3",
+                "WKZF": "https://playerservices.streamtheworld.com/api/livestream-redirect/WKZFFM.mp3"
+            }
+            stream_link = radio_links.get(call_letters, "No matching radio station found.")
+            self.send_private_message(username, f"Listen to {call_letters} live: {stream_link}")
+            return
+
+        # Handle !radio command
+        elif command == "!radio":
+            if not query:
+                self.send_private_message(username, 'Usage: !radio "search query"')
+                return
+            match = re.match(r'"([^"]+)"', query)
+            if not match:
+                self.send_private_message(username, 'Please enclose your search query in quotes, e.g., !radio "classic rock"')
+                return
+            search_query = match.group(1)
+            self.handle_radio_command(search_query)
+            return
+
         # Handle other special commands that need custom processing
         elif command == "!pod":
             parts = message.split(maxsplit=2)
@@ -2956,7 +3039,7 @@ class BBSBotApp:
             except requests.exceptions.RequestException as e:
                 return f"Error fetching picture: {str(e)}"
 
-    def handle_blaz_command(self, call_letters):
+    def handle_blaz_command(self, username, call_letters):
         """Handle the !blaz command to provide the radio station's live broadcast link based on call letters."""
         radio_links = {
             "WPBG": "https://playerservices.streamtheworld.com/api/livestream-redirect/WPBGFM.mp3",
@@ -2966,9 +3049,16 @@ class BBSBotApp:
             "WXCL": "https://playerservices.streamtheworld.com/api/livestream-redirect/WXCLFM.mp3",
             "WKZF": "https://playerservices.streamtheworld.com/api/livestream-redirect/WKZFFM.mp3"
         }
-        stream_link = radio_links.get(call_letters.upper(), "No matching radio station found.")
-        response = f"Listen to {call_letters.upper()} live: {stream_link}"
-        self.send_full_message(response)
+        
+        if not call_letters:
+            available_stations = ", ".join(sorted(radio_links.keys()))
+            response = f"Usage: !blaz <call_letters> | Available stations: {available_stations}"
+        else:
+            stream_link = radio_links.get(call_letters.upper(), "No matching radio station found.")
+            response = f"Listen to {call_letters.upper()} live: {stream_link}"
+        
+        # Send response using private_message since this is in handle_private_trigger
+        self.send_private_message(username, response)
 
     def handle_radio_command(self, query):
         """Handle the !radio command to provide an internet radio station link based on the search query."""
