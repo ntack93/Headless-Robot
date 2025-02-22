@@ -133,6 +133,8 @@ class BBSBotApp:
         self.pending_messages_table_name = 'PendingMessages'
         self.create_pending_messages_table()
         self.openai_client = OpenAI(api_key=self.openai_api_key.get())
+        self.in_teleconference = False  # Add this flag
+        self.join_timer = None  # Add timer reference
 
     def create_dynamodb_table(self):
         """Create DynamoDB table if it doesn't exist."""
@@ -664,6 +666,8 @@ class BBSBotApp:
         if not self.connected:
             return
 
+        self.stop_join_timer()  # Stop join timer on disconnect
+        self.in_teleconference = False  # Reset teleconference state
         self.stop_event.set()
         self.stop_keep_alive()  # Stop keep-alive coroutine
         if self.writer:
@@ -720,6 +724,12 @@ class BBSBotApp:
         for line in lines[:-1]:
             self.append_terminal_text(line + "\n", "normal")
             print(f"Incoming line: {line}")  # Log each incoming line
+
+            # Check for teleconference entry message
+            if "Teleconference" in line and "You are in the" in line and "channel." in line:
+                if not self.in_teleconference:
+                    self.in_teleconference = True
+                    self.start_join_timer()
 
             # Remove ANSI codes for easier parsing
             ansi_escape_regex = re.compile(r'\x1b\[(.*?)m')
@@ -2572,7 +2582,9 @@ class BBSBotApp:
                         # Ensure the link ends with .gif
                         if direct_gif_url.endswith('.webp'):
                             direct_gif_url = direct_gif_url.replace('.webp', '.gif')
-                        return direct_gif_url
+                        # Shorten the URL
+                        shortened_url = self.shorten_url(direct_gif_url)
+                        return shortened_url
                     else:
                         return "Could not extract the direct GIF link."
             except requests.exceptions.RequestException as e:
@@ -3103,6 +3115,69 @@ class BBSBotApp:
                 return output
         except Exception as e:
             return f"Error running Musk post script: {str(e)}"
+
+    def start_join_timer(self):
+        """Start timer to send 'join majorlink' every 60 seconds"""
+        if self.connected and self.writer:
+            asyncio.run_coroutine_threadsafe(self._send_message("join majorlink\r\n"), self.loop)
+            self.join_timer = self.master.after(60000, self.start_join_timer)  # Schedule next join
+
+    def stop_join_timer(self):
+        """Stop the join timer if it's running"""
+        if self.join_timer:
+            self.master.after_cancel(self.join_timer)
+            self.join_timer = None
+
+    def shorten_url(self, url):
+        """Shorten a URL using TinyURL's API."""
+        try:
+            tinyurl_api = f"http://tinyurl.com/api-create.php?url={url}"
+            response = requests.get(tinyurl_api)
+            if response.status_code == 200:
+                return response.text
+            return url  # Return original URL if shortening fails
+        except Exception:
+            return url  # Return original URL if any error occurs
+
+    def get_gif_response(self, query):
+        """Fetch a popular GIF based on the query and return the direct link to the GIF."""
+        key = self.giphy_api_key.get()
+        if not key:
+            return "Giphy API key is missing."
+        elif not query:
+            return "Please specify a query."
+        else:
+            url = "https://api.giphy.com/v1/gifs/search"
+            params = {
+                "api_key": key,
+                "q": query,
+                "limit": 1,
+                "rating": "g"
+            }
+            try:
+                r = requests.get(url, params=params)
+                data = r.json()
+                if not data['data']:
+                    return "No GIFs found for the query."
+                else:
+                    gif_page_url = data['data'][0]['url']
+                    # Fetch the HTML content of the Giphy page
+                    page_response = requests.get(gif_page_url)
+                    soup = BeautifulSoup(page_response.content, 'html.parser')
+                    # Extract the direct link to the GIF
+                    meta_tag = soup.find('meta', property='og:image')
+                    if meta_tag:
+                        direct_gif_url = meta_tag['content']
+                        # Ensure the link ends with .gif
+                        if direct_gif_url.endswith('.webp'):
+                            direct_gif_url = direct_gif_url.replace('.webp', '.gif')
+                        # Shorten the URL
+                        shortened_url = self.shorten_url(direct_gif_url)
+                        return shortened_url
+                    else:
+                        return "Could not extract the direct GIF link."
+            except requests.exceptions.RequestException as e:
+                return f"Error fetching GIF: {str(e)}"
 
 def main():
     app = None  # Ensure app is defined
