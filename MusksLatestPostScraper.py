@@ -11,7 +11,6 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
 from bs4 import BeautifulSoup
 
@@ -23,67 +22,84 @@ def load_credentials():
     with open("xcreds.json", "r") as file:
         return json.load(file)
 
-def login_to_x(driver, username, password):
-    """Log in to X using the provided credentials."""
+def login_to_x(driver, username, password, x_username):
+    """Linux-specific login function with visual feedback"""
     try:
         print("Navigating to login page...")
-        driver.get("https://twitter.com/i/flow/login")  # Using full Twitter login URL
+        driver.get("https://twitter.com/i/flow/login")
         wait = WebDriverWait(driver, 30)
 
-        print("Waiting for username field...")
+        print("Entering username...")
         username_field = wait.until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "input[autocomplete='username']"))
         )
-        print("Found username field, entering credentials...")
-        time.sleep(2)  # Short pause before typing
-        username_field.send_keys(username)
+        time.sleep(1)
+        username_field.send_keys(username)  # Start with email
         username_field.send_keys(Keys.RETURN)
-        time.sleep(2)  # Wait for password field to be ready
+        time.sleep(2)
 
-        print("Waiting for password field...")
+        # Check for additional username verification step
+        try:
+            print("Checking for username verification...")
+            username_verify = wait.until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "input[data-testid='ocfEnterTextTextInput']"))
+            )
+            print("Username verification required, entering X username...")
+            time.sleep(1)
+            username_verify.send_keys(x_username)
+            username_verify.send_keys(Keys.RETURN)
+            time.sleep(2)
+        except Exception as e:
+            print("No username verification required, continuing...")
+
+        print("Entering password...")
         password_field = wait.until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='password']"))
         )
-        print("Found password field, entering password...")
         time.sleep(1)
         password_field.send_keys(password)
         password_field.send_keys(Keys.RETURN)
 
-        # Wait for successful login
-        print("Waiting for login to complete...")
+        print("Waiting for login completion...")
         wait.until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-testid='primaryColumn']"))
         )
         print("Login successful!")
 
-        # Save cookies
-        print("Saving cookies...")
-        with open("cookies.pkl", "wb") as file:
-            pickle.dump(driver.get_cookies(), file)
+        print("Navigating to Elon Musk's profile...")
+        time.sleep(2)
+        driver.get("https://x.com/elonmusk")
+        time.sleep(2)
 
     except Exception as e:
-        print(f"Login error details: {str(e)}")
-        if "timeout" in str(e).lower():
-            print("Page took too long to load. Check your internet connection.")
-        elif "no such element" in str(e).lower():
-            print("Could not find login elements. X might have updated their page structure.")
-        print("Current URL:", driver.current_url)
-        print("Page source preview:", driver.page_source[:500])
-        driver.quit()
-        sys.exit(1)
+        print(f"Login failed: {str(e)}")
+        raise
 
-def load_cookies(driver):
-    """Load cookies from a file and add them to the driver."""
-    try:
-        with open("cookies.pkl", "rb") as file:
-            cookies = pickle.load(file)
-            for cookie in cookies:
-                driver.add_cookie(cookie)
-        return True
-    except FileNotFoundError:
-        return False
+def extract_posts(html_content):
+    """
+    Extracts Elon Musk's most recent non-pinned post
+    Args:
+        html_content (str): Raw HTML content
+    Returns:
+        str: Most recent non-pinned post text, or None if not found
+    """
+    soup = BeautifulSoup(html_content, 'html.parser')
+    articles = soup.find_all('article')
+    
+    for article in articles:
+        pinned = article.find('div', {'data-testid': 'socialContext'})
+        if pinned and 'Pinned' in pinned.text:
+            continue
+            
+        text_div = article.find('div', {'data-testid': 'tweetText'})
+        if text_div:
+            post_text = ' '.join([span.text for span in text_div.find_all('span')])
+            if post_text.strip():
+                return post_text.strip()
+    
+    return None
 
-def download_x_page(output_file, username, password):
+def download_x_page(output_file, username, password, x_username):
     """
     Downloads Elon Musk's X page using Chrome in headless mode on Linux.
     """
@@ -92,119 +108,57 @@ def download_x_page(output_file, username, password):
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-extensions")
-    chrome_options.add_argument("--disable-notifications")
-    chrome_options.add_argument("--disable-infobars")
-    chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36")
-    chrome_options.add_argument("--enable-javascript")
     chrome_options.add_argument("--start-maximized")
-    chrome_options.add_argument('--lang=en_US')
-    chrome_options.add_argument(f"--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{133} Safari/537.36")
+    chrome_options.add_argument("--disable-notifications")
+    chrome_options.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36")
     
     chrome_service = Service('/usr/bin/chromedriver')
     
     try:
         print("Setting up Chrome driver...")
         driver = webdriver.Chrome(service=chrome_service, options=chrome_options)
-        driver.set_page_load_timeout(60)  # Increased timeout
-        driver.set_script_timeout(30)
-
-        print("Navigating to Elon Musk's X page...")
-        driver.get("https://x.com/elonmusk")
-        if load_cookies(driver):
-            driver.refresh()
-        else:
-            print("Logging in to X...")
-            login_to_x(driver, username, password)
-
+        driver.set_page_load_timeout(60)
+        
+        print("Logging in to X...")
+        login_to_x(driver, username, password, x_username)
+        
         wait = WebDriverWait(driver, 60)
-        print("Waiting for first post...")
+        print("Waiting for posts to load...")
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "article")))
         
-        # Multiple scrolls with longer delays
         print("Scrolling to load more content...")
-        for _ in range(3):
-            try:
-                driver.execute_script("window.scrollBy(0, 1000);")
-                time.sleep(3)
-            except Exception as e:
-                print(f"Scroll error: {e}")
-                break
+        for i in range(3):
+            print(f"Scroll {i+1}/3...")
+            driver.execute_script("window.scrollBy(0, 1000);")
+            time.sleep(2)
         
-        print("Retrieving page source...")
-        page_source = driver.page_source
+        print("Extracting most recent post...")
+        post = extract_posts(driver.page_source)
+        
+        if post:
+            print("\nElon Musk's Most Recent Post:")
+            print("-" * 50)
+            print(post)
+            print("-" * 50)
+        else:
+            print("No recent posts found")
+        
+        print("\nSaving page content...")
         with open(output_file, "w", encoding="utf-8") as f:
-            f.write(page_source)
+            f.write(driver.page_source)
         print(f"Download complete! HTML saved to: {output_file}")
+        
+        return True
+        
     except Exception as e:
-        print(f"Error during page download: {e}")
-        print("Current URL:", driver.current_url)
-        raise
+        print(f"Error during page download: {str(e)}")
+        return False
     finally:
         driver.quit()
 
-def get_latest_post(html_file):
-    """
-    Reads the local HTML file and looks for Musk's first non-pinned post.
-    Returns the post content and full timestamp.
-    """
-    with open(html_file, 'r', encoding='utf-8') as file:
-        content = file.read()
-    
-    soup = BeautifulSoup(content, 'html.parser')
-    articles = soup.find_all('article')
-    print("Debug - Found articles:", len(articles))
-    
-    for article in articles:
-        # Skip if this is a pinned post
-        pinned_indicator = article.find('div', string=lambda t: t and 'Pinned' in t)
-        if pinned_indicator:
-            print("Debug - Skipping pinned post")
-            continue
-            
-        # Try multiple methods to find the post content
-        content_selectors = [
-            'div[data-testid="tweetText"]',  # Main tweet content
-            'span[data-testid="tweetText"]',  # Alternative content location
-            'div[lang]',  # Language-tagged content div
-            'span[dir="auto"]'  # Auto-direction text
-        ]
-        
-        for selector in content_selectors:
-            content_element = article.select_one(selector)
-            if content_element:
-                # Get all text content, removing extra whitespace
-                text = ' '.join(content_element.stripped_strings)
-                if text and len(text) > 1:  # Ensure it's not empty or just whitespace
-                    # Find timestamp - try multiple methods
-                    timestamp = None
-                    time_element = article.find('time')
-                    if time_element:
-                        timestamp = time_element.get('datetime')
-                    
-                    if not timestamp:
-                        # Try finding timestamp in data attributes
-                        time_div = article.find('div', {'data-testid': 'timestamp'})
-                        if time_div:
-                            timestamp = time_div.get_text(strip=True)
-                    
-                    print(f"Debug - Found post using selector: {selector}")
-                    print(f"Debug - Post text: {text}")
-                    print(f"Debug - Timestamp: {timestamp}")
-                    return text, timestamp or "No timestamp"
-    
-    print("Debug - No valid posts found after trying all selectors")
-    return None, None
-
-if __name__ == "__main__":
-    """
-    Main script flow
-    """
-    # Use $HOME environment variable for Linux compatibility
+def main():
+    """Main script flow"""
     output_file = os.path.expanduser("~/muskhtml.html")
-    
-    # Ensure xcreds.json is in the same directory as the script
     script_dir = os.path.dirname(os.path.abspath(__file__))
     creds_path = os.path.join(script_dir, "xcreds.json")
     
@@ -213,8 +167,9 @@ if __name__ == "__main__":
             print(f"Error: Credentials file not found at {creds_path}")
             print("Creating example credentials file...")
             example_creds = {
-                "username": "your_username",
-                "password": "your_password"
+                "username": "your_email",
+                "password": "your_password",
+                "x_username": "your_x_username"
             }
             with open(creds_path, "w") as f:
                 json.dump(example_creds, f, indent=4)
@@ -222,25 +177,25 @@ if __name__ == "__main__":
             sys.exit(1)
             
         credentials = load_credentials()
-        username = credentials["username"]
-        password = credentials["password"]
-
-        # Download the page
-        download_x_page(output_file, username, password)
-
-        # Scrape the downloaded HTML
-        post_content, timestamp = get_latest_post(output_file)
-
-        # Print result
-        if post_content:
-            print(f"Latest Post: {post_content} (Posted: {timestamp})")
-        else:
-            print("No recent post found.")
+        success = download_x_page(
+            output_file,
+            credentials["username"],
+            credentials["password"],
+            credentials["x_username"]
+        )
+        
+        if not success:
+            print("Scraping failed!")
+            sys.exit(1)
+            
     except FileNotFoundError:
         print(f"Error: Credentials file not found at {creds_path}")
         print("Please create an 'xcreds.json' file with your X credentials")
-        print('Format: {"username": "your_username", "password": "your_password"}')
+        print('Format: {"username": "your_email", "password": "your_password", "x_username": "your_x_username"}')
         sys.exit(1)
     except Exception as e:
         print(f"Error: {str(e)}")
         sys.exit(1)
+
+if __name__ == "__main__":
+    main()

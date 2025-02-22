@@ -971,49 +971,33 @@ class BBSBotApp:
             asyncio.run_coroutine_threadsafe(self._send_message("\r\n"), self.loop)
 
     def handle_private_trigger(self, username, message):
-        """
-        Handle private message triggers and respond privately.
-        """
-        response = "Unknown command."  # Initialize response with a default value
-        if "!weather" in message:
-            location = message.split("!weather", 1)[1].strip()
-            response = self.get_weather_response(location)
-        elif "!yt" in message:
-            query = message.split("!yt", 1)[1].strip()
-            response = self.get_youtube_response(query)
-        elif "!search" in message:
-            query = message.split("!search", 1)[1].strip()
-            response = self.get_web_search_response(query)
-        elif "!chat" in message:
-            query = message.split("!chat", 1)[1].strip()
-            response = self.get_chatgpt_response(query, username=username)
-        elif "!news" in message:
-            topic = message.split("!news", 1)[1].strip()
-            response = self.get_news_response(topic)
-        elif "!map" in message:
-            place = message.split("!map", 1)[1].strip()
-            response = self.get_map_response(place)
-        elif "!pic" in message:
-            query = message.split("!pic", 1)[1].strip()
-            response = self.get_pic_response(query)
-        elif "!help" in message:
-            response = self.get_help_response()
-        elif "!stocks" in message:
-            symbol = message.split("!stocks", 1)[1].strip()
-            response = self.get_stock_price(symbol)
-        elif "!crypto" in message:
-            crypto = message.split("!crypto", 1)[1].strip()
-            response = self.get_crypto_price(crypto)
-        elif "!gif" in message:
-            query = message.split("!gif", 1)[1].strip()
-            response = self.get_gif_response(query)
-        elif "!doc" in message:
-            query = message.split("!doc", 1)[1].strip()
-            self.handle_doc_command(query, username)
-            return  # Exit early to avoid sending a response twice
-        elif "!said" in message:
-            self.handle_said_command(username, message)
-        elif "!pod" in message:
+        """Handle private message triggers and respond privately."""
+        # Extract command and query
+        parts = message.strip().split(maxsplit=1)
+        command = parts[0].lower()
+        query = parts[1] if len(parts) > 1 else ""
+
+        # Handle !msg command with proper whispering
+        if command == "!msg":
+            msg_parts = query.split(maxsplit=1)
+            if len(msg_parts) < 2:
+                self.send_private_message(username, "Usage: !msg <username> <message>")
+                return
+            recipient, msg_content = msg_parts
+            self.save_pending_message(recipient, username, msg_content)
+            self.send_private_message(username, f"Message for {recipient} saved. They will receive it when next seen.")
+            return
+
+        # Handle !trump command
+        elif command == "!trump":
+            response = self.get_trump_post()
+            chunks = self.chunk_message(response, 250)
+            for chunk in chunks:
+                self.send_private_message(username, chunk)
+            return
+
+        # Handle other special commands that need custom processing
+        elif command == "!pod":
             parts = message.split(maxsplit=2)
             if len(parts) < 3:
                 self.send_private_message(username, "Usage: !pod <show> <episode name or number>")
@@ -1022,36 +1006,56 @@ class BBSBotApp:
             episode = parts[2]
             self.handle_pod_command(username, show, episode)
             return
-        elif "!msg" in message:
-            parts = message.split(maxsplit=2)
-            if len(parts) < 3:
-                response = "Usage: !msg <username> <message>"
-            else:
-                recipient = parts[1]
-                msg_content = parts[2]
-                # Save the message
-                self.save_pending_message(recipient, username, msg_content)
-                # Whisper confirmation to sender
-                self.send_private_message(username, f"Message for {recipient} saved. They will receive it when next seen.")
-                return  # Return early to avoid the default send_private_message at the end
-        elif "!mail" in message:
+        elif command == "!doc":
+            self.handle_doc_command(query, username)
+            return
+        elif command == "!said":
+            self.handle_said_command(username, message)
+            return
+        elif command == "!mail":
             self.handle_mail_command(message)
-        elif "!radio" in message:
+            return
+        elif command == "!radio":
             match = re.match(r'!radio\s+"([^"]+)"', message)
             if match:
-                query = match.group(1)
-                self.handle_radio_command(query)
+                self.handle_radio_command(match.group(1))
             else:
                 self.send_private_message(username, 'Usage: !radio "search query"')
-        elif "!musk" in message:
+            return
+
+        # Handle standard commands that return responses
+        response = None
+        if command == "!weather":
+            response = self.get_weather_response(query)
+        elif command == "!yt":
+            response = self.get_youtube_response(query)
+        elif command == "!search":
+            response = self.get_web_search_response(query)
+        elif command == "!chat":
+            response = self.get_chatgpt_response(query, username=username)
+        elif command == "!news":
+            response = self.get_news_response(query)
+        elif command == "!map":
+            response = self.get_map_response(query)
+        elif command == "!pic":
+            response = self.get_pic_response(query)
+        elif command == "!help":
+            response = self.get_help_response()
+        elif command == "!stocks":
+            response = self.get_stock_price(query)
+        elif command == "!crypto":
+            response = self.get_crypto_price(query)
+        elif command == "!gif":
+            response = self.get_gif_response(query)
+        elif command == "!musk":
             response = self.get_musk_post()
         else:
-            # Assume it's a message for the !chat trigger
+            # No command matched - treat as chat query
             response = self.get_chatgpt_response(message, username=username)
 
-        self.send_private_message(username, response)
-
-    
+        # Send response via whisper
+        if response:
+            self.send_private_message(username, response)
 
     def handle_page_trigger(self, username, module_or_channel, message):
         """
