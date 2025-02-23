@@ -217,6 +217,9 @@ class BBSBotCLI:
         self.auto_login_enabled = MockVar(value=True)  # Set auto-login to True
         self.logon_automation_enabled = MockVar(value=True)  # Set logon automation to True
 
+        self.join_timer = None  # Add timer reference
+        self.in_teleconference = False  # Add teleconference state
+
     def setup_logging(self):
         """Configure logging with platform-independent paths"""
         log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'bbs_bot.log')
@@ -476,6 +479,9 @@ class BBSBotCLI:
             # Send join command
             await self.send_message("join majorlink")
             
+            # Start the join timer after 60 seconds
+            self.loop.call_later(60, lambda: asyncio.create_task(self.start_join_timer()))
+            
             self.login_complete = True
             print(f"{Fore.GREEN}Login sequence completed{Style.RESET_ALL}")
             
@@ -483,6 +489,18 @@ class BBSBotCLI:
             print(f"{Fore.RED}Error during login sequence: {e}{Style.RESET_ALL}")
             self.logger.exception("Login sequence error")
             self.login_complete = False
+
+    async def start_join_timer(self):
+        """Start timer to send 'join majorlink' every 60 seconds"""
+        if self.bot.connected and self.bot.writer:
+            await self.send_message("join majorlink\r\n")
+            self.join_timer = self.loop.call_later(60, lambda: asyncio.create_task(self.start_join_timer()))
+
+    def stop_join_timer(self):
+        """Stop the join timer if it's running"""
+        if self.join_timer:
+            self.join_timer.cancel()
+            self.join_timer = None
 
     def load_username(self):
         """Load username from file."""
@@ -621,6 +639,8 @@ class BBSBotCLI:
     async def disconnect(self):
         """Safely disconnect from the BBS."""
         if self.bot.connected:
+            # Stop join timer before disconnecting
+            self.stop_join_timer()
             # Stop keep-alive before disconnecting
             self.stop_keep_alive()
             try:
@@ -650,6 +670,8 @@ class BBSBotCLI:
         self.logger.info(f"Received signal {sig.name}, shutting down")
         self.stop_event.set()
         
+        # Stop join timer before shutdown
+        self.stop_join_timer()
         # Stop keep-alive before canceling tasks
         self.stop_keep_alive()
         
