@@ -82,6 +82,7 @@ class BBSBotApp:
         self.split_view_enabled = False  # Add Split View toggle
         self.split_view_clones = []  # Track split view clones
         self.no_spam_mode = tk.BooleanVar(value=self.load_no_spam_state())  # Initialize using saved state
+        self.no_spam_perm = False  # Initialize no_spam_perm mode
         self.public_message_history = {}  # Dictionary to store public messages
         self.multi_line_buffer = {}    # Maps username -> accumulated message string
         self.multiline_timeout = {}    # Maps username -> timeout ID (from after())
@@ -713,37 +714,17 @@ class BBSBotApp:
             self.master.after(100, self.process_incoming_messages)
 
     def process_data_chunk(self, data):
-        """
-        Accumulate data in self.partial_line.
-        Unify carriage returns, split on newline, parse triggers for complete lines.
-        """
+        """Process incoming data and handle triggers."""
         data = data.replace('\r\n', '\n').replace('\r', '\n')
         self.partial_line += data
         lines = self.partial_line.split("\n")
 
         for line in lines[:-1]:
             self.append_terminal_text(line + "\n", "normal")
-            print(f"Incoming line: {line}")  # Log each incoming line
-
-            # Check for teleconference entry message
-            if "Teleconference" in line and "You are in the" in line and "channel." in line:
-                if not self.in_teleconference:
-                    self.in_teleconference = True
-                    self.start_join_timer()
-
+            
             # Remove ANSI codes for easier parsing
             ansi_escape_regex = re.compile(r'\x1b\[(.*?)m')
             clean_line = ansi_escape_regex.sub('', line)
-
-            # Always process the !nospam command regardless of mode
-            if "!nospam" in clean_line:
-                match = re.match(r'From (.+?): (.+)', clean_line)
-                if match and match.group(1).lower() != "ultron":  # Ensure it's not from the bot itself
-                    self.no_spam_mode.set(not self.no_spam_mode.get())
-                    state = "enabled" if self.no_spam_mode.get() else "disabled"
-                    self.append_terminal_text(f"[System] No Spam Mode has been {state}.\n", "normal")
-                    self.save_no_spam_state()
-                    continue
 
             # Extract message type and content
             is_whisper = re.match(r'From (.+?) \(whispered\): (.+)', clean_line)
@@ -751,34 +732,48 @@ class BBSBotApp:
             is_direct = re.match(r'From (.+?) \(to you\): (.+)', clean_line)
             is_public = re.match(r'From (.+?): (.+)', clean_line)
 
+            # Always process whispered !nospamperm command first
+            if is_whisper and "!nospamperm" in clean_line:
+                username = is_whisper.group(1)
+                self.no_spam_perm = not self.no_spam_perm
+                state = "permanently enabled" if self.no_spam_perm else "disabled"
+                self.send_private_message(username, f"No Spam Permanent Lock has been {state}.")
+                self.save_no_spam_state()
+                continue
+
+            # Then process !nospam if nospamperm is off
+            if not self.no_spam_perm and "!nospam" in clean_line:
+                if is_whisper or is_page:  # Allow !nospam via whisper/page
+                    username = is_whisper.group(1) if is_whisper else is_page.group(1)
+                    self.no_spam_mode.set(not self.no_spam_mode.get())
+                    state = "ON" if self.no_spam_mode.get() else "OFF"
+                    self.send_private_message(username, f"No Spam Mode is now {state}")
+                    self.save_no_spam_state()
+                    continue
+
             # Skip messages from the bot itself
             if is_public and is_public.group(1).lower() == "ultron":
                 continue
 
-            # When nospam is enabled, only process whispers and pages
-            if self.no_spam_mode.get() and not (is_whisper or is_page):
-                self.update_user_tracking(clean_line)
-                continue
-
-            # Process triggers based on message type
+            # Process messages based on type
             if is_whisper:
                 username, message = is_whisper.group(1), is_whisper.group(2)
                 self.handle_private_trigger(username, message)
             elif is_page:
                 username, module, message = is_page.group(1), is_page.group(3), is_page.group(4)
                 self.handle_page_trigger(username, module, message)
-            elif is_direct and not self.no_spam_mode.get():
-                username, message = is_direct.group(1), is_direct.group(2)
-                self.handle_direct_message(username, message)
-            elif is_public and not self.no_spam_mode.get():
-                username, message = is_public.group(1), is_public.group(2)
-                self.store_public_message(username, message)
-                if message.startswith("!"):
-                    self.handle_public_trigger(username, message)
+            elif not self.no_spam_mode.get():  # Only process direct/public if nospam is OFF
+                if is_direct:
+                    username, message = is_direct.group(1), is_direct.group(2)
+                    self.handle_direct_message(username, message)
+                elif is_public:
+                    username, message = is_public.group(1), is_public.group(2)
+                    self.store_public_message(username, message)
+                    if message.startswith("!"):
+                        self.handle_public_trigger(username, message)
 
             # Always update user tracking
             self.update_user_tracking(clean_line)
-            self.previous_line = clean_line
 
         self.partial_line = lines[-1]
 
@@ -1006,10 +1001,12 @@ class BBSBotApp:
                 self.send_private_message(username, chunk)
             return
 
-
-
-
-
+        # Handle !nospamperm command (whisper only)
+        if command == "!nospamperm":
+            self.no_spam_perm = not self.no_spam_perm
+            state = "permanently enabled" if self.no_spam_perm else "disabled"
+            self.send_private_message(username, f"No Spam Permanent Lock has been {state}.")
+            return
 
         # Handle !seen command
         elif command == "!seen":
@@ -2683,12 +2680,16 @@ class BBSBotApp:
         if os.path.exists("nospam_state.json"):
             with open("nospam_state.json", "r") as file:
                 data = json.load(file)
-                return data.get("nospam", False)
-        return False
+                self.no_spam_perm = data.get("nospam_perm", False)
+                return data.get("nospam", True)  # Default to True if not found
+        return True  # Default to True if file doesn't exist
 
     def save_no_spam_state(self):
         with open("nospam_state.json", "w") as file:
-            json.dump({"nospam": self.no_spam_mode.get()}, file)
+            json.dump({
+                "nospam": self.no_spam_mode.get(),
+                "nospam_perm": self.no_spam_perm
+            }, file)
 
     def handle_doc_command(self, query, username, public=False):
         """Handle the !doc command to create a document using ChatGPT and provide an S3 link to the file."""
