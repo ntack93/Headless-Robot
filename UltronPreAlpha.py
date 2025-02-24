@@ -732,12 +732,6 @@ class BBSBotApp:
                 asyncio.run_coroutine_threadsafe(self._send_message("join majorlink\r\n"), self.loop)
                 continue
 
-            # Check for Chatbot's suspicious glare
-            if "Chatbot@thepenaltybox.org is eyeing you suspiciously." in clean_line:
-                self.logger.info("Detected Chatbot's glare - responding with glare")
-                asyncio.run_coroutine_threadsafe(self._send_message("glare chatbot\r\n"), self.loop)
-                continue
-
             # Extract message type and content
             is_whisper = re.match(r'From (.+?) \(whispered\): (.+)', clean_line)
             is_page = re.match(r'(.+?) is paging you (from|via) (.+?): (.+)', clean_line)
