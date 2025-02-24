@@ -726,6 +726,18 @@ class BBSBotApp:
             ansi_escape_regex = re.compile(r'\x1b\[(.*?)m')
             clean_line = ansi_escape_regex.sub('', line)
 
+            # Check for MAIN channel
+            if "You are in the MAIN channel." in clean_line:
+                self.logger.info("MAIN channel detected - rejoining majorlink")
+                asyncio.run_coroutine_threadsafe(self._send_message("join majorlink\r\n"), self.loop)
+                continue
+
+            # Check for Chatbot's suspicious glare
+            if "Chatbot@thepenaltybox.org is eyeing you suspiciously." in clean_line:
+                self.logger.info("Detected Chatbot's glare - responding with glare")
+                asyncio.run_coroutine_threadsafe(self._send_message("glare chatbot\r\n"), self.loop)
+                continue
+
             # Extract message type and content
             is_whisper = re.match(r'From (.+?) \(whispered\): (.+)', clean_line)
             is_page = re.match(r'(.+?) is paging you (from|via) (.+?): (.+)', clean_line)

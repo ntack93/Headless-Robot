@@ -375,11 +375,15 @@ class BBSBotCLI:
                 # Handle both string and bytes data
                 data_str = data if isinstance(data, str) else data.decode('utf-8', errors='ignore')
 
-                # Check for cleanup message
+                # Check for cleanup message or MAIN channel message
                 if "finish up and log off." in data_str.lower():
                     print(f"{Fore.YELLOW}Cleanup maintenance detected!{Style.RESET_ALL}")
                     await self.send_message("=x")
                     await self.handle_cleanup_maintenance()
+                    continue
+                elif "You are in the MAIN channel." in data_str:
+                    print(f"{Fore.YELLOW}MAIN channel detected - rejoining majorlink{Style.RESET_ALL}")
+                    await self.send_message("join majorlink")
                     continue
 
                 # Print received data with proper color

@@ -8436,3 +8436,8 @@ chatbot/chat_handlers.py
 chatbot/commands.py
 chatbot/database.py
 chatbot/utils.py
+chromedriver-win64/THIRD_PARTY_NOTICES.chromedriver
+chromedriver-win64/LICENSE.chromedriver
+chromedriver-win64/chromedriver.exe
+windows_x_scraper.py
+chromedriver.exe
