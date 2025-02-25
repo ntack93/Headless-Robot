@@ -2724,13 +2724,26 @@ class BBSBotApp:
             self.delete_pending_message(username, timestamp)
 
     def load_no_spam_state(self):
-        """Load no_spam and no_spam_perm states from file."""
-        if os.path.exists("nospam_state.json"):
-            with open("nospam_state.json", "r") as file:
-                data = json.load(file)
-                self.no_spam_perm = data.get("nospam_perm", False)  # Load permanent state
-                return data.get("nospam", True)  # Load regular state
-        return True  # Default to True if file doesn't exist
+        """Load no_spam and no_spam_perm states from file, creating if needed."""
+        default_state = {
+            "nospam": True,
+            "nospam_perm": False
+        }
+        try:
+            if os.path.exists("nospam_state.json"):
+                with open("nospam_state.json", "r") as file:
+                    data = json.load(file)
+            else:
+                # Create file with default values if it doesn't exist
+                with open("nospam_state.json", "w") as file:
+                    json.dump(default_state, file)
+                data = default_state
+                
+            self.no_spam_perm = data.get("nospam_perm", False)
+            return data.get("nospam", True)
+        except Exception as e:
+            print(f"Error loading nospam state: {e}")
+            return True
 
     def save_no_spam_state(self):
         """Save both no_spam and no_spam_perm states to file."""
@@ -2740,20 +2753,19 @@ class BBSBotApp:
                 "nospam_perm": self.no_spam_perm  # Save permanent state
             }, file)
 
-    def handle_doc_command(self, query, username, public=False):
+    def handle_doc_command(self, query, username, private=False):
         """Handle the !doc command to create a document using ChatGPT and provide an S3 link to the file."""
         if not query:
-            if public:
-                self.send_full_message(f"Please provide a query for the document, {username}.")
+            response = "Please provide a query for the document."
+            if private:
+                self.send_private_message(username, response)
             else:
-                self.send_private_message(username, "Please provide a query for the document.")
+                self.send_full_message(response)
             return
-
-        # Prepare the prompt for ChatGPT
-        prompt = f"Please write a detailed, verbose document based on the following query: {query}"
 
         try:
             # Get the response from ChatGPT
+            prompt = f"Please write a detailed, verbose document based on the following query: {query}"
             response = self.get_chatgpt_document_response(prompt)
 
             # Save the response to a .txt file
@@ -2761,7 +2773,7 @@ class BBSBotApp:
             with open(filename, 'w') as file:
                 file.write(response)
 
-            # Upload the file to S3
+            # Upload to S3
             s3_client = boto3.client('s3', region_name='us-east-1')
             bucket_name = 'bot-files-repo'
             object_key = filename
@@ -2774,21 +2786,25 @@ class BBSBotApp:
                     ContentType='text/plain'
                 )
 
-            # Generate the S3 URL
+            # Generate S3 URL
             s3_url = f"https://{bucket_name}.s3.amazonaws.com/{object_key}"
             response_message = f"Here is your document: {s3_url}"
 
-            # Delete the local file after uploading
+            # Clean up local file
             os.remove(filename)
 
-        except Exception as e:
-            response_message = f"Error creating document: {str(e)}"
+            # Send response according to private/public mode
+            if private:
+                self.send_private_message(username, response_message)
+            else:
+                self.send_full_message(response_message)
 
-        # Send the download link to the user
-        if public:
-            self.send_full_message(response_message)
-        else:
-            self.send_private_message(username, response_message)
+        except Exception as e:
+            error_message = f"Error creating document: {str(e)}"
+            if private:
+                self.send_private_message(username, error_message)
+            else:
+                self.send_full_message(error_message)
 
     def get_chatgpt_document_response(self, prompt):
         """Send a prompt to ChatGPT and return the full response as a string."""
@@ -2857,6 +2873,12 @@ class BBSBotApp:
 
     def handle_public_trigger(self, username, message, whisper=False):
         """Handle public message triggers and respond either publicly or via whisper."""
+        # Honor no_spam mode for all public triggers
+        if self.no_spam_mode.get() and not whisper:
+            # Process command but force whisper response
+            self.handle_public_trigger(username, message, whisper=True)
+            return
+
         # Process !trump command differently since it needs chunking
         if "!trump" in message:
             trump_text = self.get_trump_post()
@@ -2868,9 +2890,17 @@ class BBSBotApp:
                     self.send_full_message(chunk)
             return
 
-        response = None
-        
+        # Handle !doc command specially
+        if "!doc" in message:
+            query = message.split("!doc", 1)[1].strip()
+            if whisper:
+                self.handle_doc_command(query, username, private=True)
+            else:
+                self.handle_doc_command(query, username, private=False)
+            return
+
         # Process the command and get response
+        response = None
         if "!weather" in message:
             response = self.get_weather_response(message.split("!weather", 1)[1].strip())
         elif "!yt" in message:
@@ -2885,43 +2915,19 @@ class BBSBotApp:
             response = self.get_map_response(message.split("!map", 1)[1].strip())
         elif "!pic" in message:
             response = self.get_pic_response(message.split("!pic", 1)[1].strip())
-        elif "!help" in message:
-            response = self.get_help_response()
+        elif "!gif" in message:
+            response = self.get_gif_response(message.split("!gif", 1)[1].strip())
         elif "!stocks" in message:
             response = self.get_stock_price(message.split("!stocks", 1)[1].strip())
         elif "!crypto" in message:
             response = self.get_crypto_price(message.split("!crypto", 1)[1].strip())
-        elif "!gif" in message:
-            response = self.get_gif_response(message.split("!gif", 1)[1].strip())
         elif "!seen" in message:
             target_username = message.split("!seen", 1)[1].strip()
             response = self.get_seen_response(target_username)
-        elif "!doc" in message:
-            self.handle_doc_command(message.split("!doc", 1)[1].strip(), username, public=True)
-            return
-        elif "!said" in message:
-            self.handle_said_command(username, message)
-            return
-        elif "!pod" in message:
-            self.handle_pod_command(username, message)
-            return
-        elif "!mail" in message:
-            self.handle_mail_command(message)
-            return
-        elif "!blaz" in message:
-            call_letters = message.split("!blaz", 1)[1].strip()
-            response = self.handle_blaz_command(call_letters)  # Make sure handle_blaz_command returns a response
+        elif "!help" in message:
+            response = self.get_help_response()
         elif "!musk" in message:
             response = self.get_musk_post()
-        elif "!msg" in message:
-            parts = message.split(maxsplit=2)
-            if len(parts) < 3:
-                response = "Usage: !msg <username> <message>"
-            else:
-                recipient = parts[1]
-                msg_content = parts[2]
-                self.handle_msg_command(recipient, msg_content, username)
-                return
 
         # Send the response either as whisper or public message
         if response:
