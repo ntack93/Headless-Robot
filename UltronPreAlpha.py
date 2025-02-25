@@ -1094,13 +1094,15 @@ class BBSBotApp:
 
         # Handle other special commands that need custom processing
         elif command == "!pod":
-            parts = message.split(maxsplit=2)
-            if len(parts) < 3:
-                self.send_private_message(username, "Usage: !pod <show> <episode name or number>")
+            match = re.match(r'!pod\s+"([^"]+)"\s+"([^"]+)"', message)
+            if not match:
+                self.send_private_message(username, 'Usage: !pod "<show>" "<episode name or number>"')
                 return
-            show = parts[1]
-            episode = parts[2]
-            self.handle_pod_command(username, show, episode)
+            
+            show = match.group(1)
+            episode = match.group(2)
+            response = self.get_podcast_response(show, episode)
+            self.send_private_message(username, response)
             return
         elif command == "!doc":
             self.handle_doc_command(query, username)
