@@ -738,19 +738,19 @@ class BBSBotApp:
             is_direct = re.match(r'From (.+?) \(to you\): (.+)', clean_line)
             is_public = re.match(r'From (.+?): (.+)', clean_line)
 
-            # Handle !nospamperm and !nospam commands first
-            if is_whisper:
+            # Always process whispered !nospamperm command first
+            if is_whisper and "!nospamperm" in clean_line:
                 username = is_whisper.group(1)
-                message = is_whisper.group(2)
-                
-                if "!nospamperm" in message:
-                    self.no_spam_perm = not self.no_spam_perm
-                    state = "permanently enabled" if self.no_spam_perm else "disabled"
-                    self.send_private_message(username, f"No Spam Permanent Lock has been {state}.")
-                    self.save_no_spam_state()
-                    continue
-                    
-                elif not self.no_spam_perm and "!nospam" in message:
+                self.no_spam_perm = not self.no_spam_perm
+                state = "permanently enabled" if self.no_spam_perm else "disabled"
+                self.send_private_message(username, f"No Spam Permanent Lock has been {state}.")
+                self.save_no_spam_state()
+                continue
+
+            # Then process !nospam if nospamperm is off
+            if not self.no_spam_perm and "!nospam" in clean_line:
+                if is_whisper or is_page:  # Allow !nospam via whisper/page
+                    username = is_whisper.group(1) if is_whisper else is_page.group(1)
                     self.no_spam_mode.set(not self.no_spam_mode.get())
                     state = "ON" if self.no_spam_mode.get() else "OFF"
                     self.send_private_message(username, f"No Spam Mode is now {state}")
@@ -768,22 +768,15 @@ class BBSBotApp:
             elif is_page:
                 username, module, message = is_page.group(1), is_page.group(3), is_page.group(4)
                 self.handle_page_trigger(username, module, message)
-            elif is_direct:
-                username, message = is_direct.group(1), is_direct.group(2)
-                if self.no_spam_mode.get():
-                    # In no_spam mode, respond via whisper instead of direct message
-                    self.handle_private_trigger(username, message)
-                else:
+            elif not self.no_spam_mode.get():  # Only process direct/public if nospam is OFF
+                if is_direct:
+                    username, message = is_direct.group(1), is_direct.group(2)
                     self.handle_direct_message(username, message)
-            elif is_public:
-                username, message = is_public.group(1), is_public.group(2)
-                self.store_public_message(username, message)
-                if message.startswith("!"):
-                    if self.no_spam_mode.get():
-                        # In no_spam mode, handle public triggers via whisper
-                        self.handle_public_trigger(username, message, whisper=True)
-                    else:
-                        self.handle_public_trigger(username, message, whisper=False)
+                elif is_public:
+                    username, message = is_public.group(1), is_public.group(2)
+                    self.store_public_message(username, message)
+                    if message.startswith("!"):
+                        self.handle_public_trigger(username, message)
 
             # Always update user tracking
             self.update_user_tracking(clean_line)
@@ -995,24 +988,6 @@ class BBSBotApp:
         command = parts[0].lower()
         query = parts[1] if len(parts) > 1 else ""
 
-        # Handle !nospamperm and !nospam commands first
-        if command == "!nospamperm":
-            self.no_spam_perm = not self.no_spam_perm
-            state = "permanently enabled" if self.no_spam_perm else "disabled"
-            self.send_private_message(username, f"No Spam Permanent Lock has been {state}.")
-            self.save_no_spam_state()
-            return
-        elif command == "!nospam":
-            if self.no_spam_perm:
-                self.send_private_message(username, "Not Possible.")
-                return
-            else:
-                self.no_spam_mode.set(not self.no_spam_mode.get())
-                state = "ON" if self.no_spam_mode.get() else "OFF"
-                self.send_private_message(username, f"No Spam Mode is now {state}")
-                self.save_no_spam_state()
-                return
-
         # Handle !msg command with proper whispering
         if command == "!msg":
             msg_parts = query.split(maxsplit=1)
@@ -1037,7 +1012,6 @@ class BBSBotApp:
             self.no_spam_perm = not self.no_spam_perm
             state = "permanently enabled" if self.no_spam_perm else "disabled"
             self.send_private_message(username, f"No Spam Permanent Lock has been {state}.")
-            self.save_no_spam_state()  # Save both states after toggling
             return
 
         # Handle !seen command
@@ -1120,15 +1094,13 @@ class BBSBotApp:
 
         # Handle other special commands that need custom processing
         elif command == "!pod":
-            match = re.match(r'!pod\s+"([^"]+)"\s+"([^"]+)"', message)
-            if not match:
-                self.send_private_message(username, 'Usage: !pod "<show>" "<episode name or number>"')
+            parts = message.split(maxsplit=2)
+            if len(parts) < 3:
+                self.send_private_message(username, "Usage: !pod <show> <episode name or number>")
                 return
-            
-            show = match.group(1)
-            episode = match.group(2)
-            response = self.get_podcast_response(show, episode)
-            self.send_private_message(username, response)
+            show = parts[1]
+            episode = parts[2]
+            self.handle_pod_command(username, show, episode)
             return
         elif command == "!doc":
             self.handle_doc_command(query, username)
@@ -1137,20 +1109,8 @@ class BBSBotApp:
             self.handle_said_command(username, message)
             return
         elif command == "!mail":
-            try:
-                parts = shlex.split(message)
-                if len(parts) < 4:
-                    self.send_private_message(username, "Usage: !mail \"recipient@example.com\" \"Subject\" \"Body\"")
-                    return
-                recipient = parts[1]
-                subject = parts[2]
-                body = parts[3]
-                response = self.send_email(recipient, subject, body)
-                self.send_private_message(username, response)
-                return
-            except ValueError as e:
-                self.send_private_message(username, f"Error parsing command: {str(e)}")
-                return
+            self.handle_mail_command(message)
+            return
         elif command == "!radio":
             match = re.match(r'!radio\s+"([^"]+)"', message)
             if match:
@@ -1599,10 +1559,10 @@ class BBSBotApp:
     def get_help_response(self):
         """Return the help message as a string."""
         return (
-            "Available commands: !weather <location>, !yt <query>, !search <query>, !chat <message>, !news <topic>, "
-            "!map <place>, !pic <query>, !polly <voice> <text>, !mp3yt <youtube link>, !help, !seen <username>, "
-            "!greeting, !stocks <symbol>, !crypto <symbol>, !timer <value> <minutes or seconds>, !gif <query>, "
-            "!msg <username> <message>, !doc <query>, !pod <show> <episode>, !trump, !musk, !mail, !blaz, !said, !nospam"
+            "Available commands: Please use a ! immediately followed by one of the following keywords (no space): "
+            "weather <location>, yt <query>, search <query>, chat <message>, news <topic>, map <place>, pic <query>, "
+            "polly <voice> <text>, mp3yt <youtube link>, help, seen <username>, greeting, stocks <symbol>, "
+            "crypto <symbol>, timer <value> <minutes or seconds>, gif <query>, msg <username> <message>, doc <query>, pod <show> <episode>, !trump, nospam.\n"
         )
 
     def append_terminal_text(self, text, default_tag="normal"):
@@ -2048,8 +2008,7 @@ class BBSBotApp:
         for chunk in chunks:
             full_message = f"Whisper to {username} {chunk}"
             asyncio.run_coroutine_threadsafe(self._send_message(full_message + "\r\n"), self.loop)
-            # Don't append outgoing whispers to terminal display
-            # self.append_terminal_text(full_message + "\n", "normal")
+            self.append_terminal_text(full_message + "\n", "normal")
 
     
 
@@ -2724,48 +2683,34 @@ class BBSBotApp:
             self.delete_pending_message(username, timestamp)
 
     def load_no_spam_state(self):
-        """Load no_spam and no_spam_perm states from file, creating if needed."""
-        default_state = {
-            "nospam": True,
-            "nospam_perm": False
-        }
-        try:
-            if os.path.exists("nospam_state.json"):
-                with open("nospam_state.json", "r") as file:
-                    data = json.load(file)
-            else:
-                # Create file with default values if it doesn't exist
-                with open("nospam_state.json", "w") as file:
-                    json.dump(default_state, file)
-                data = default_state
-                
-            self.no_spam_perm = data.get("nospam_perm", False)
-            return data.get("nospam", True)
-        except Exception as e:
-            print(f"Error loading nospam state: {e}")
-            return True
+        if os.path.exists("nospam_state.json"):
+            with open("nospam_state.json", "r") as file:
+                data = json.load(file)
+                self.no_spam_perm = data.get("nospam_perm", False)
+                return data.get("nospam", True)  # Default to True if not found
+        return True  # Default to True if file doesn't exist
 
     def save_no_spam_state(self):
-        """Save both no_spam and no_spam_perm states to file."""
         with open("nospam_state.json", "w") as file:
             json.dump({
                 "nospam": self.no_spam_mode.get(),
-                "nospam_perm": self.no_spam_perm  # Save permanent state
+                "nospam_perm": self.no_spam_perm
             }, file)
 
-    def handle_doc_command(self, query, username, private=False):
+    def handle_doc_command(self, query, username, public=False):
         """Handle the !doc command to create a document using ChatGPT and provide an S3 link to the file."""
         if not query:
-            response = "Please provide a query for the document."
-            if private:
-                self.send_private_message(username, response)
+            if public:
+                self.send_full_message(f"Please provide a query for the document, {username}.")
             else:
-                self.send_full_message(response)
+                self.send_private_message(username, "Please provide a query for the document.")
             return
+
+        # Prepare the prompt for ChatGPT
+        prompt = f"Please write a detailed, verbose document based on the following query: {query}"
 
         try:
             # Get the response from ChatGPT
-            prompt = f"Please write a detailed, verbose document based on the following query: {query}"
             response = self.get_chatgpt_document_response(prompt)
 
             # Save the response to a .txt file
@@ -2773,7 +2718,7 @@ class BBSBotApp:
             with open(filename, 'w') as file:
                 file.write(response)
 
-            # Upload to S3
+            # Upload the file to S3
             s3_client = boto3.client('s3', region_name='us-east-1')
             bucket_name = 'bot-files-repo'
             object_key = filename
@@ -2786,25 +2731,21 @@ class BBSBotApp:
                     ContentType='text/plain'
                 )
 
-            # Generate S3 URL
+            # Generate the S3 URL
             s3_url = f"https://{bucket_name}.s3.amazonaws.com/{object_key}"
             response_message = f"Here is your document: {s3_url}"
 
-            # Clean up local file
+            # Delete the local file after uploading
             os.remove(filename)
 
-            # Send response according to private/public mode
-            if private:
-                self.send_private_message(username, response_message)
-            else:
-                self.send_full_message(response_message)
-
         except Exception as e:
-            error_message = f"Error creating document: {str(e)}"
-            if private:
-                self.send_private_message(username, error_message)
-            else:
-                self.send_full_message(error_message)
+            response_message = f"Error creating document: {str(e)}"
+
+        # Send the download link to the user
+        if public:
+            self.send_full_message(response_message)
+        else:
+            self.send_private_message(username, response_message)
 
     def get_chatgpt_document_response(self, prompt):
         """Send a prompt to ChatGPT and return the full response as a string."""
@@ -2871,70 +2812,72 @@ class BBSBotApp:
         else:
             self.send_full_message(response)
 
-    def handle_public_trigger(self, username, message, whisper=False):
-        """Handle public message triggers and respond either publicly or via whisper."""
-        # Honor no_spam mode for all public triggers
-        if self.no_spam_mode.get() and not whisper:
-            # Process command but force whisper response
-            self.handle_public_trigger(username, message, whisper=True)
-            return
-
-        # Process !trump command differently since it needs chunking
-        if "!trump" in message:
-            trump_text = self.get_trump_post()
-            chunks = self.chunk_message(trump_text, 250)
-            for chunk in chunks:
-                if whisper:
-                    self.send_private_message(username, chunk)
-                else:
-                    self.send_full_message(chunk)
-            return
-
-        # Handle !doc command specially
-        if "!doc" in message:
-            query = message.split("!doc", 1)[1].strip()
-            if whisper:
-                self.handle_doc_command(query, username, private=True)
-            else:
-                self.handle_doc_command(query, username, private=False)
-            return
-
-        # Process the command and get response
-        response = None
+    def handle_public_trigger(self, username, message):
+        """
+        Handle public message triggers and respond accordingly.
+        """
+        response = None  # Initialize response with None
         if "!weather" in message:
-            response = self.get_weather_response(message.split("!weather", 1)[1].strip())
+            location = message.split("!weather", 1)[1].strip()
+            response = self.get_weather_response(location)
         elif "!yt" in message:
-            response = self.get_youtube_response(message.split("!yt", 1)[1].strip())
+            query = message.split("!yt", 1)[1].strip()
+            response = self.get_youtube_response(query)
         elif "!search" in message:
-            response = self.get_web_search_response(message.split("!search", 1)[1].strip())
+            query = message.split("!search", 1)[1].strip()
+            response = self.get_web_search_response(query)
         elif "!chat" in message:
-            response = self.get_chatgpt_response(message.split("!chat", 1)[1].strip(), username=username)
+            query = message.split("!chat", 1)[1].strip()
+            response = self.get_chatgpt_response(query, username=username)
         elif "!news" in message:
-            response = self.get_news_response(message.split("!news", 1)[1].strip())
+            topic = message.split("!news", 1)[1].strip()
+            response = self.get_news_response(topic)
         elif "!map" in message:
-            response = self.get_map_response(message.split("!map", 1)[1].strip())
+            place = message.split("!map", 1)[1].strip()
+            response = self.get_map_response(place)
         elif "!pic" in message:
-            response = self.get_pic_response(message.split("!pic", 1)[1].strip())
-        elif "!gif" in message:
-            response = self.get_gif_response(message.split("!gif", 1)[1].strip())
-        elif "!stocks" in message:
-            response = self.get_stock_price(message.split("!stocks", 1)[1].strip())
-        elif "!crypto" in message:
-            response = self.get_crypto_price(message.split("!crypto", 1)[1].strip())
-        elif "!seen" in message:
-            target_username = message.split("!seen", 1)[1].strip()
-            response = self.get_seen_response(target_username)
+            query = message.split("!pic", 1)[1].strip()
+            response = self.get_pic_response(query)
         elif "!help" in message:
             response = self.get_help_response()
+        elif "!stocks" in message:
+            symbol = message.split("!stocks", 1)[1].strip()
+            response = self.get_stock_price(symbol)
+        elif "!crypto" in message:
+            crypto = message.split("!crypto", 1)[1].strip()
+            response = self.get_crypto_price(crypto)
+        elif "!gif" in message:
+            query = message.split("!gif", 1)[1].strip()
+            response = self.get_gif_response(query)
+        elif "!doc" in message:
+            query = message.split("!doc", 1)[1].strip()
+            self.handle_doc_command(query, username, public=True)
+            return  # Exit early to avoid sending a response twice
+        elif "!said" in message:
+            self.handle_said_command(username, message)
+            return
+        elif "!pod" in message:
+            self.handle_pod_command(username, message)
+            return
+        elif "!mail" in message:
+            self.handle_mail_command(message)
+        elif "!blaz" in message:
+            call_letters = message.split("!blaz", 1)[1].strip()
+            self.handle_blaz_command(call_letters)
         elif "!musk" in message:
             response = self.get_musk_post()
-
-        # Send the response either as whisper or public message
-        if response:
-            if whisper:
-                self.send_private_message(username, response)
+        elif "!msg" in message:
+            parts = message.split(maxsplit=2)
+            if len(parts) < 3:
+                response = "Usage: !msg <username> <message>"
             else:
-                self.send_full_message(response)
+                recipient = parts[1]
+                msg_content = parts[2]
+                self.handle_msg_command(recipient, msg_content, username)
+                return  # Return early as handle_msg_command sends its own response
+
+        if response:
+            self.send_full_message(response)
 
     def handle_pod_command(self, sender, command_text, is_page=False, module_or_channel=None):
         """Handle the !pod command to fetch podcast episode details."""

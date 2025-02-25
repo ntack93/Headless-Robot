@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-
+#!/home/ec2-user/Headless-Robot/venv/bin/python
 import asyncio
 import sys
 import logging

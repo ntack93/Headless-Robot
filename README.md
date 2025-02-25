@@ -32,7 +32,12 @@ BBS Chat Bot is a Python application that functions as a BBS Teleconference Bot 
 
 ## Requirements
 
-- Python 3.x  
+- Python 3.x
+- Virtual Environment (venv)
+- AWS EC2 Instance (Amazon Linux 2)
+- AWS DynamoDB
+- Screen
+- systemd
 - Tkinter (usually included with Python)  
 - asyncio  
 - boto3 (for AWS DynamoDB integration)  
@@ -43,7 +48,7 @@ BBS Chat Bot is a Python application that functions as a BBS Teleconference Bot 
 - subprocess (for running external commands)
 - smtplib (for sending emails)
 
-## Installation
+## Local Installation
 
 1. **Clone the repository:**
 
@@ -80,6 +85,158 @@ BBS Chat Bot is a Python application that functions as a BBS Teleconference Bot 
        "sender_password": "your-email-password"
    }
    ```
+
+## EC2 Deployment
+
+1. **Launch EC2 Instance:**
+   - Launch an Amazon Linux 2 EC2 instance
+   - Configure security group to allow inbound port 23 (Telnet)
+   - Connect to your instance:
+   ```sh
+   ssh -i your-key.pem ec2-user@your-instance-ip
+   ```
+
+2. **Install Dependencies:**
+   ```sh
+   # Update system
+   sudo yum update -y
+   
+   # Install Python 3 and development tools
+   sudo yum install python3 python3-devel gcc screen -y
+   
+   # Install pip
+   curl -O https://bootstrap.pypa.io/get-pip.py
+   python3 get-pip.py --user
+   ```
+
+3. **Set Up Project:**
+   ```sh
+   # Create project directory
+   mkdir -p /home/ec2-user/Headless-Robot
+   cd /home/ec2-user/Headless-Robot
+   
+   # Create virtual environment
+   python3 -m venv venv
+   source venv/bin/activate
+   
+   # Clone repository
+   git clone https://github.com/ntack93/BBSBOT.git .
+   
+   # Install requirements
+   pip install -r requirements.txt
+   ```
+
+4. **Create Startup Script:**
+   ```sh
+   # filepath: /home/ec2-user/Headless-Robot/start_bot.sh
+   #!/bin/bash
+   cd /home/ec2-user/Headless-Robot
+   source venv/bin/activate
+   screen -dmS bbs_bot python3 UltronCLI.py
+   ```
+
+5. **Create Systemd Service:**
+   ```ini
+   # filepath: /etc/systemd/system/bbs-bot.service
+   [Unit]
+   Description=BBS Bot Service
+   After=network.target
+
+   [Service]
+   Type=forking
+   User=ec2-user
+   WorkingDirectory=/home/ec2-user/Headless-Robot
+   ExecStart=/bin/bash /home/ec2-user/Headless-Robot/start_bot.sh
+   Restart=always
+   RestartSec=10
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+
+6. **Set Permissions:**
+   ```sh
+   # Make startup script executable
+   chmod +x /home/ec2-user/Headless-Robot/start_bot.sh
+
+   # Set proper ownership for systemd service
+   sudo chown root:root /etc/systemd/system/bbs-bot.service
+   sudo chmod 644 /etc/systemd/system/bbs-bot.service
+   ```
+
+7. **Enable and Start Service:**
+   ```sh
+   # Reload systemd
+   sudo systemctl daemon-reload
+
+   # Enable service
+   sudo systemctl enable bbs-bot
+
+   # Start service
+   sudo systemctl start bbs-bot
+   ```
+
+## Managing the Bot on EC2
+
+1. **Service Management:**
+   ```sh
+   # Check service status
+   sudo systemctl status bbs-bot
+
+   # View logs
+   journalctl -u bbs-bot -f
+
+   # Restart service
+   sudo systemctl restart bbs-bot
+
+   # Stop service
+   sudo systemctl stop bbs-bot
+   ```
+
+2. **Screen Session Management:**
+   ```sh
+   # List screen sessions
+   screen -ls
+
+   # Attach to bot screen
+   screen -r bbs_bot
+
+   # Detach from screen (while in screen)
+   # Press Ctrl+A, then press D
+   ```
+
+3. **Log Monitoring:**
+   ```sh
+   # View bot logs
+   tail -f /home/ec2-user/Headless-Robot/bbs_bot.log
+   ```
+
+## File Structure
+
+- ultronprealpha.py: Main application script.
+- ultron(MacOS).py: MacOS-specific version of the bot.
+- README.md: This README file.
+- requirements.txt: List of required Python packages.
+- api_keys.json: Stores API keys.
+- favorites.json: Stores favorite BBS addresses.
+- username.json: Stores the username.
+- password.json: Stores the password.
+- email_credentials.json: Stores email credentials.
+- last_seen.json: Stores the last seen timestamps for users.
+- nospam_state.json: Stores the state of No Spam Mode.
+
+## File Structure on EC2
+
+```
+/home/ec2-user/Headless-Robot/
+├── venv/                     # Virtual environment
+├── UltronCLI.py             # CLI interface
+├── UltronPreAlpha.py        # Main bot logic
+├── api_keys.json            # API keys
+├── start_bot.sh             # Startup script
+├── username.json            # Credentials
+└── bbs_bot.log             # Log file
+```
 
 ## API Setup
 
@@ -118,6 +275,26 @@ Configure your AWS credentials using:
    ```
 
 and follow the prompts.
+
+## Troubleshooting EC2 Deployment
+
+1. **Service Won't Start:**
+   - Check logs: `journalctl -u bbs-bot -f`
+   - Verify paths in start_bot.sh
+   - Ensure proper permissions
+
+2. **Bot Disconnects:**
+   - Check network connectivity
+   - Verify keep-alive settings
+   - Review EC2 security groups
+
+3. **Screen Session Missing:**
+   - Restart service: `sudo systemctl restart bbs-bot`
+   - Check screen installation: `which screen`
+
+4. **Permission Issues:**
+   - Verify file ownership: `ls -l /home/ec2-user/Headless-Robot/`
+   - Check service user: `ps aux | grep bbs_bot`
 
 ## Usage
 
@@ -162,20 +339,6 @@ and follow the prompts.
    Use the Settings window to configure API keys and preferences.  
    Use the Favorites window to manage your favorite BBS addresses.  
    To ensure uninterrupted query responses, send the command `/P OK` in the chat to enable unlimited pages.
-
-## File Structure
-
-- ultronprealpha.py: Main application script.
-- ultron(MacOS).py: MacOS-specific version of the bot.
-- README.md: This README file.
-- requirements.txt: List of required Python packages.
-- api_keys.json: Stores API keys.
-- favorites.json: Stores favorite BBS addresses.
-- username.json: Stores the username.
-- password.json: Stores the password.
-- email_credentials.json: Stores email credentials.
-- last_seen.json: Stores the last seen timestamps for users.
-- nospam_state.json: Stores the state of No Spam Mode.
 
 ## Contributing
 
