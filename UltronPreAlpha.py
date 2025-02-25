@@ -1109,8 +1109,20 @@ class BBSBotApp:
             self.handle_said_command(username, message)
             return
         elif command == "!mail":
-            self.handle_mail_command(message)
-            return
+            try:
+                parts = shlex.split(message)
+                if len(parts) < 4:
+                    self.send_private_message(username, "Usage: !mail \"recipient@example.com\" \"Subject\" \"Body\"")
+                    return
+                recipient = parts[1]
+                subject = parts[2]
+                body = parts[3]
+                response = self.send_email(recipient, subject, body)
+                self.send_private_message(username, response)
+                return
+            except ValueError as e:
+                self.send_private_message(username, f"Error parsing command: {str(e)}")
+                return
         elif command == "!radio":
             match = re.match(r'!radio\s+"([^"]+)"', message)
             if match:
