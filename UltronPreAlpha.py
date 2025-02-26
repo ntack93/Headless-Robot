@@ -56,6 +56,11 @@ class BBSBotApp:
         self.master = master
         self.master.title("BBS Chatbot Jeremy")
 
+        # Load nospam states first
+        saved_states = self.load_no_spam_state()
+        self.no_spam_mode = tk.BooleanVar(value=saved_states['nospam'])
+        self.no_spam_perm = saved_states['nospam_perm']  # Initialize from saved state
+
         # ----------------- Configurable variables ------------------
         self.host = tk.StringVar(value="bbs.example.com")
         self.port = tk.IntVar(value=23)
@@ -81,8 +86,6 @@ class BBSBotApp:
         self.giphy_api_key = tk.StringVar(value=DEFAULT_GIPHY_API_KEY)  # Add Giphy API Key
         self.split_view_enabled = False  # Add Split View toggle
         self.split_view_clones = []  # Track split view clones
-        self.no_spam_mode = tk.BooleanVar(value=self.load_no_spam_state())  # Initialize using saved state
-        self.no_spam_perm = False  # Initialize no_spam_perm mode
         self.public_message_history = {}  # Dictionary to store public messages
         self.multi_line_buffer = {}    # Maps username -> accumulated message string
         self.multiline_timeout = {}    # Maps username -> timeout ID (from after())
@@ -722,64 +725,18 @@ class BBSBotApp:
         for line in lines[:-1]:
             self.append_terminal_text(line + "\n", "normal")
             
-            # Remove ANSI codes for easier parsing
-            ansi_escape_regex = re.compile(r'\x1b\[(.*?)m')
-            clean_line = ansi_escape_regex.sub('', line)
+            # Parse the message
+            msg_type, username, content = self.parse_message(line)
+            if msg_type and username and content:
+                # Process the message
+                self.process_message(msg_type, username, content)
 
-            # Check for MAIN channel
-            if "You are in the MAIN channel." in clean_line:
-                self.logger.info("MAIN channel detected - rejoining majorlink")
-                asyncio.run_coroutine_threadsafe(self._send_message("join majorlink\r\n"), self.loop)
-                continue
-
-            # Extract message type and content
-            is_whisper = re.match(r'From (.+?) \(whispered\): (.+)', clean_line)
-            is_page = re.match(r'(.+?) is paging you (from|via) (.+?): (.+)', clean_line)
-            is_direct = re.match(r'From (.+?) \(to you\): (.+)', clean_line)
-            is_public = re.match(r'From (.+?): (.+)', clean_line)
-
-            # Always process whispered !nospamperm command first
-            if is_whisper and "!nospamperm" in clean_line:
-                username = is_whisper.group(1)
-                self.no_spam_perm = not self.no_spam_perm
-                state = "permanently enabled" if self.no_spam_perm else "disabled"
-                self.send_private_message(username, f"No Spam Permanent Lock has been {state}.")
-                self.save_no_spam_state()
-                continue
-
-            # Then process !nospam if nospamperm is off
-            if not self.no_spam_perm and "!nospam" in clean_line:
-                if is_whisper or is_page:  # Allow !nospam via whisper/page
-                    username = is_whisper.group(1) if is_whisper else is_page.group(1)
-                    self.no_spam_mode.set(not self.no_spam_mode.get())
-                    state = "ON" if self.no_spam_mode.get() else "OFF"
-                    self.send_private_message(username, f"No Spam Mode is now {state}")
-                    self.save_no_spam_state()
-                    continue
-
-            # Skip messages from the bot itself
-            if is_public and is_public.group(1).lower() == "ultron":
-                continue
-
-            # Process messages based on type
-            if is_whisper:
-                username, message = is_whisper.group(1), is_whisper.group(2)
-                self.handle_private_trigger(username, message)
-            elif is_page:
-                username, module, message = is_page.group(1), is_page.group(3), is_page.group(4)
-                self.handle_page_trigger(username, module, message)
-            elif not self.no_spam_mode.get():  # Only process direct/public if nospam is OFF
-                if is_direct:
-                    username, message = is_direct.group(1), is_direct.group(2)
-                    self.handle_direct_message(username, message)
-                elif is_public:
-                    username, message = is_public.group(1), is_public.group(2)
-                    self.store_public_message(username, message)
-                    if message.startswith("!"):
-                        self.handle_public_trigger(username, message)
+                # Store public messages for !said command
+                if msg_type == 'public' and username.lower() != 'ultron':
+                    self.store_public_message(username, content)
 
             # Always update user tracking
-            self.update_user_tracking(clean_line)
+            self.update_user_tracking(line)
 
         self.partial_line = lines[-1]
 
@@ -983,7 +940,26 @@ class BBSBotApp:
 
     def handle_private_trigger(self, username, message):
         """Handle private message triggers and respond privately."""
-        # Extract command and query
+        # Handle !nospamperm command first
+        if message.strip() == "!nospamperm":
+            self.no_spam_perm = not self.no_spam_perm
+            state = "permanently enabled" if self.no_spam_perm else "disabled"
+            self.send_private_message(username, f"No Spam Permanent Lock has been {state}.")
+            self.save_no_spam_state()
+            return
+
+        # Handle !nospam command next, but only if nospamperm is not enabled
+        if message.strip() == "!nospam":
+            if self.no_spam_perm:
+                self.send_private_message(username, "Not possible - No Spam Mode is permanently locked.")
+                return
+            self.no_spam_mode.set(not self.no_spam_mode.get())
+            state = "ON" if self.no_spam_mode.get() else "OFF"
+            self.send_private_message(username, f"No Spam Mode is now {state}")
+            self.save_no_spam_state()
+            return
+
+        # Extract command and query for other commands
         parts = message.strip().split(maxsplit=1)
         command = parts[0].lower()
         query = parts[1] if len(parts) > 1 else ""
@@ -2683,12 +2659,15 @@ class BBSBotApp:
             self.delete_pending_message(username, timestamp)
 
     def load_no_spam_state(self):
+        """Load both nospam states from file."""
         if os.path.exists("nospam_state.json"):
             with open("nospam_state.json", "r") as file:
                 data = json.load(file)
-                self.no_spam_perm = data.get("nospam_perm", False)
-                return data.get("nospam", True)  # Default to True if not found
-        return True  # Default to True if file doesn't exist
+                return {
+                    'nospam': data.get("nospam", True),
+                    'nospam_perm': data.get("nospam_perm", False)
+                }
+        return {'nospam': True, 'nospam_perm': False}  # Default values
 
     def save_no_spam_state(self):
         with open("nospam_state.json", "w") as file:
@@ -2815,8 +2794,18 @@ class BBSBotApp:
     def handle_public_trigger(self, username, message):
         """
         Handle public message triggers and respond accordingly.
+        If !nospam is enabled, respond via whisper instead of public message.
         """
+        # Special handling for !nospam command when nospamperm is enabled
+        if "!nospam" in message:
+            if self.no_spam_perm:
+                self.send_private_message(username, "Not possible - No Spam Mode is permanently locked.")
+            else:
+                self.send_private_message(username, "The !nospam command must be sent via whisper or page.")
+            return
+
         response = None  # Initialize response with None
+        
         if "!weather" in message:
             location = message.split("!weather", 1)[1].strip()
             response = self.get_weather_response(location)
@@ -2849,10 +2838,13 @@ class BBSBotApp:
         elif "!gif" in message:
             query = message.split("!gif", 1)[1].strip()
             response = self.get_gif_response(query)
+        elif "!seen" in message:
+            target_username = message.split("!seen", 1)[1].strip()
+            response = self.get_seen_response(target_username)
         elif "!doc" in message:
             query = message.split("!doc", 1)[1].strip()
-            self.handle_doc_command(query, username, public=True)
-            return  # Exit early to avoid sending a response twice
+            self.handle_doc_command(query, username, public=not self.no_spam_mode.get())
+            return
         elif "!said" in message:
             self.handle_said_command(username, message)
             return
@@ -2861,9 +2853,10 @@ class BBSBotApp:
             return
         elif "!mail" in message:
             self.handle_mail_command(message)
+            return
         elif "!blaz" in message:
             call_letters = message.split("!blaz", 1)[1].strip()
-            self.handle_blaz_command(call_letters)
+            response = self.handle_blaz_command(call_letters)
         elif "!musk" in message:
             response = self.get_musk_post()
         elif "!msg" in message:
@@ -2874,10 +2867,13 @@ class BBSBotApp:
                 recipient = parts[1]
                 msg_content = parts[2]
                 self.handle_msg_command(recipient, msg_content, username)
-                return  # Return early as handle_msg_command sends its own response
+                return
 
         if response:
-            self.send_full_message(response)
+            if self.no_spam_mode.get():
+                self.send_private_message(username, response)
+            else:
+                self.send_full_message(response)
 
     def handle_pod_command(self, sender, command_text, is_page=False, module_or_channel=None):
         """Handle the !pod command to fetch podcast episode details."""
@@ -3182,6 +3178,128 @@ class BBSBotApp:
                         return "Could not extract the direct GIF link."
             except requests.exceptions.RequestException as e:
                 return f"Error fetching GIF: {str(e)}"
+
+    def determine_response_channel(self, message_type, nospam_state, nospam_perm):
+        """Determine the appropriate response channel based on message type and nospam states."""
+        if message_type in ['whisper', 'page']:
+            return message_type  # Always respond in same channel
+        elif nospam_state or nospam_perm:
+            return 'whisper'     # Force private responses
+        else:
+            return message_type  # Use original channel
+
+    def parse_message(self, line):
+        """Parse incoming messages and return tuple of (type, username, content)."""
+        # Remove ANSI codes for easier parsing
+        ansi_escape_regex = re.compile(r'\x1b\[(.*?)m')
+        clean_line = ansi_escape_regex.sub('', line)
+
+        patterns = {
+            'whisper': (r'From (.+?) \(whispered\): (.+)', lambda m: (m.group(1), m.group(2))),
+            'page': (r'(.+?) is paging you (?:from|via) (.+?): (.+)', lambda m: (m.group(1), m.group(3))),
+            'direct': (r'From (.+?) \(to you\): (.+)', lambda m: (m.group(1), m.group(2))),
+            'public': (r'From (.+?): (.+)', lambda m: (m.group(1), m.group(2)))
+        }
+
+        for msg_type, (pattern, extract) in patterns.items():
+            if match := re.match(pattern, clean_line):
+                username, content = extract(match)
+                return msg_type, username, content
+
+        return None, None, None
+
+    def process_message(self, msg_type, username, content):
+        """Process messages according to type and nospam states."""
+        # Always handle !nospamperm first (whispers only)
+        if "!nospamperm" in content:
+            if msg_type == "whisper":
+                self.no_spam_perm = not self.no_spam_perm
+                state = "permanently enabled" if self.no_spam_perm else "disabled"
+                self.send_private_message(username, f"No Spam Permanent Lock has been {state}.")
+                self.save_no_spam_state()
+            return
+
+        # Then handle !nospam if allowed
+        if "!nospam" in content:
+            if self.no_spam_perm:
+                self.send_private_message(username, "Not possible - No Spam Mode is permanently locked.")
+                return
+            
+            # Only allow toggle via whisper/page
+            if msg_type in ["whisper", "page"]:
+                self.no_spam_mode.set(not self.no_spam_mode.get())
+                state = "ON" if self.no_spam_mode.get() else "OFF"
+                self.send_private_message(username, f"No Spam Mode is now {state}")
+                self.save_no_spam_state()
+            else:
+                self.send_private_message(username, "The !nospam command must be sent via whisper or page.")
+            return
+
+        # Determine response channel for other commands
+        response_channel = self.determine_response_channel(
+            msg_type,
+            self.no_spam_mode.get(),
+            self.no_spam_perm
+        )
+
+        # Process command and send response
+        if response := self.get_command_response(content, username):
+            self.send_response(response_channel, username, response)
+
+    def send_response(self, channel_type, username, response):
+        """Send response through the appropriate channel."""
+        if not response:
+            return
+
+        chunks = self.chunk_message(response, 250)
+        for chunk in chunks:
+            if channel_type == 'whisper':
+                self.send_private_message(username, chunk)
+            elif channel_type == 'page':
+                self.send_page_response(username, 'majorlink', chunk)
+            else:  # public or direct
+                self.send_full_message(chunk)
+
+    def get_command_response(self, content, username=None):
+        """Get appropriate response for a command."""
+        if not content.startswith('!'):
+            return None
+
+        command = content.split()[0][1:]  # Remove ! and get command name
+        args = content[len(command)+2:].strip()  # Get everything after command
+
+        command_handlers = {
+            'weather': lambda: self.get_weather_response(args),
+            'yt': lambda: self.get_youtube_response(args),
+            'search': lambda: self.get_web_search_response(args),
+            'chat': lambda: self.get_chatgpt_response(args, username=username),
+            'news': lambda: self.get_news_response(args),
+            'map': lambda: self.get_map_response(args),
+            'pic': lambda: self.get_pic_response(args),
+            'help': lambda: self.get_help_response(),
+            'seen': lambda: self.get_seen_response(args),
+            'stocks': lambda: self.get_stock_price(args),
+            'crypto': lambda: self.get_crypto_price(args),
+            'gif': lambda: self.get_gif_response(args),
+            'musk': lambda: self.get_musk_post(),
+            'trump': lambda: self.get_trump_post(),
+            'polly': lambda: self.handle_polly_command(*args.split(maxsplit=1)) if len(args.split(maxsplit=1)) == 2 else "Usage: !polly <voice> <text>",
+            'mp3yt': lambda: self.handle_ytmp3_command(args),
+            'greeting': lambda: self.handle_greeting_command(),
+            'timer': lambda: self.handle_timer_command(username, *args.split(maxsplit=1)) if len(args.split(maxsplit=1)) == 2 else "Usage: !timer <value> <minutes or seconds>",
+            'doc': lambda: self.handle_doc_command(args, username),
+            'pod': lambda: self.handle_pod_command(username, f"!pod {args}"),
+            'said': lambda: self.handle_said_command(username, f"!said {args}"),
+            'mail': lambda: self.handle_mail_command(f"!mail {args}"),
+            'blaz': lambda: self.handle_blaz_command(args),
+            'radio': lambda: self.handle_radio_command(args),
+            'msg': lambda: self.handle_msg_command(*args.split(maxsplit=1), username) if len(args.split(maxsplit=1)) == 2 else "Usage: !msg <username> <message>",
+            'nospam': lambda: self.no_spam_mode.set(not self.no_spam_mode.get()) or f"No Spam Mode has been {'enabled' if self.no_spam_mode.get() else 'disabled'}.",
+            'nospamperm': lambda: "This command is only available via whisper."
+        }
+
+        handler = command_handlers.get(command)
+        return handler() if handler else None
 
 def main():
     app = None  # Ensure app is defined
