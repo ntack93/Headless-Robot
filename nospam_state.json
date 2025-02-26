@@ -1,1 +1,4 @@
-{"nospam": false}
+{
+    "nospam": true,
+    "nospam_perm": true
+}

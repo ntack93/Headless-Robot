@@ -2695,7 +2695,7 @@ class BBSBotApp:
             json.dump({
                 "nospam": self.no_spam_mode.get(),
                 "nospam_perm": self.no_spam_perm
-            }, file)
+            }, file, indent=4)
 
     def handle_doc_command(self, query, username, public=False):
         """Handle the !doc command to create a document using ChatGPT and provide an S3 link to the file."""
