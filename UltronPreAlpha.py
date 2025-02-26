@@ -1085,7 +1085,7 @@ class BBSBotApp:
             self.handle_said_command(username, message)
             return
         elif command == "!mail":
-            self.handle_mail_command(message)
+            self.handle_mail_command(message, username, channel_type='whisper')
             return
         elif command == "!radio":
             match = re.match(r'!radio\s+"([^"]+)"', message)
@@ -1186,7 +1186,7 @@ class BBSBotApp:
             self.handle_pod_command(username, show, episode, is_page=True, module_or_channel=module_or_channel)
             return
         elif "!mail" in message:
-            self.handle_mail_command(message)
+            self.handle_mail_command(message, username, channel_type='page')
         elif "!radio" in message:
             match = re.match(r'!radio\s+"([^"]+)"', message)
             if match:
@@ -1232,7 +1232,7 @@ class BBSBotApp:
             self.handle_pod_command(username, show, episode)
             return
         elif "!mail" in message:
-            self.handle_mail_command(message)
+            self.handle_mail_command(message, username, channel_type='direct')
             return
         elif "!radio" in message:
             match = re.match(r'!radio\s+"([^"]+)"', message)
@@ -1963,7 +1963,7 @@ class BBSBotApp:
                             self.send_full_message(chunk)
                         return
                     elif message.startswith("!mail"):
-                        self.handle_mail_command(message)
+                        self.handle_mail_command(message, sender, channel_type='public')
                     elif message.startswith("!blaz"):
                         call_letters = message.split("!blaz", 1)[1].strip()
                         self.handle_blaz_command(call_letters)
@@ -2869,7 +2869,7 @@ class BBSBotApp:
             self.handle_pod_command(username, message)
             return
         elif "!mail" in message:
-            self.handle_mail_command(message)
+            self.handle_mail_command(message, username, channel_type='public')
             return
         elif "!blaz" in message:
             call_letters = message.split("!blaz", 1)[1].strip()
@@ -3025,21 +3025,37 @@ class BBSBotApp:
         except Exception as e:
             return f"Error sending email: {str(e)}"
 
-    def handle_mail_command(self, command_text):
+    def handle_mail_command(self, command_text, username=None, channel_type='public'):
         """Handle the !mail command to send an email."""
         try:
-            parts = shlex.split(command_text)
-            if len(parts) < 4:
-                self.send_full_message("Usage: !mail \"recipient@example.com\" \"Subject\" \"Body\"")
-                return
+            parts = command_text.split(maxsplit=3)  # Split into up to 4 parts
+            if len(parts) < 2:  # Just "!mail" with no arguments
+                response = "Usage: !mail \"recipient@example.com\" \"Subject\" \"Body\""
+            else:
+                try:
+                    parts = shlex.split(command_text)
+                    if len(parts) < 4:
+                        response = "Usage: !mail \"recipient@example.com\" \"Subject\" \"Body\""
+                    else:
+                        recipient = parts[1]
+                        subject = parts[2]
+                        body = parts[3]
+                        response = self.send_email(recipient, subject, body)
+                except ValueError as e:
+                    response = f"Error parsing command: {str(e)}"
 
-            recipient = parts[1]
-            subject = parts[2]
-            body = parts[3]
-            response = self.send_email(recipient, subject, body)
-            self.send_full_message(response)
-        except ValueError as e:
-            self.send_full_message(f"Error parsing command: {str(e)}")
+            # Use the appropriate channel for the response
+            if username:
+                self.send_response(channel_type, username, response)
+            else:
+                self.send_full_message(response)
+                
+        except Exception as e:
+            error_msg = f"Error processing mail command: {str(e)}"
+            if username:
+                self.send_response(channel_type, username, error_msg)
+            else:
+                self.send_full_message(error_msg)
 
     def get_pic_response(self, query):
         """Fetch a random picture from Pexels based on the query."""
@@ -3288,41 +3304,141 @@ class BBSBotApp:
         if not content.startswith('!'):
             return None
 
-        command = content.split()[0][1:]  # Remove ! and get command name
-        args = content[len(command)+2:].strip()  # Get everything after command
+        # Get command and args
+        parts = content.split(maxsplit=1)
+        command = parts[0][1:]  # Remove the ! prefix
+        args = parts[1] if len(parts) > 1 else ""
 
         command_handlers = {
-            'weather': lambda: self.get_weather_response(args),
-            'yt': lambda: self.get_youtube_response(args),
-            'search': lambda: self.get_web_search_response(args),
-            'chat': lambda: self.get_chatgpt_response(args, username=username),
-            'news': lambda: self.get_news_response(args),
-            'map': lambda: self.get_map_response(args),
-            'pic': lambda: self.get_pic_response(args),
-            'help': lambda: self.get_help_response(),
-            'seen': lambda: self.get_seen_response(args),
-            'stocks': lambda: self.get_stock_price(args.strip()),
-            'crypto': lambda: self.get_crypto_price(args),
-            'gif': lambda: self.get_gif_response(args),
-            'musk': lambda: self.get_musk_post(),
-            'trump': lambda: self.get_trump_post(),
-            'polly': lambda: self.handle_polly_command(*args.split(maxsplit=1)) if len(args.split(maxsplit=1)) == 2 else "Usage: !polly <voice> <text>",
-            'mp3yt': lambda: self.handle_ytmp3_command(args),
-            'greeting': lambda: self.handle_greeting_command(),
-            'timer': lambda: self.handle_timer_command(username, *args.split(maxsplit=1)) if len(args.split(maxsplit=1)) == 2 else "Usage: !timer <value> <minutes or seconds>",
-            'doc': lambda: self.handle_doc_command(args, username),
-            'pod': lambda: self.handle_pod_command(username, f"!pod {args}"),
-            'said': lambda: self.handle_said_command(username, f"!said {args}"),
-            'mail': lambda: self.handle_mail_command(f"!mail {args}"),
-            'blaz': lambda: self.handle_blaz_command(args),
-            'radio': lambda: self.handle_radio_command(args),
-            'msg': lambda: self.handle_msg_command(*args.split(maxsplit=1), username) if len(args.split(maxsplit=1)) == 2 else "Usage: !msg <username> <message>",
-            'nospam': lambda: self.no_spam_mode.set(not self.no_spam_mode.get()) or f"No Spam Mode has been {'enabled' if self.no_spam_mode.get() else 'disabled'}.",
-            'nospamperm': lambda: "This command is only available via whisper."
+            # ...existing code...
+            'mail': lambda: self.handle_mail_command(f"!mail {args}", username=username),
+            # ...existing code...
         }
 
         handler = command_handlers.get(command)
         return handler() if handler else None
+
+    def handle_command(self, command, args, username=None, channel_type='public'):
+        """Generic command handler that respects channel type."""
+        response = None
+        
+        if command == "weather":
+            response = self.get_weather_response(args)
+        elif command == "yt":
+            response = self.get_youtube_response(args)
+        elif command == "search":
+            response = self.get_web_search_response(args)
+        elif command == "chat":
+            response = self.get_chatgpt_response(args, username=username)
+        elif command == "news":
+            response = self.get_news_response(args)
+        elif command == "map":
+            response = self.get_map_response(args)
+        elif command == "pic":
+            response = self.get_pic_response(args)
+        elif command == "help":
+            response = self.get_help_response()
+        elif command == "stocks":
+            response = self.get_stock_price(args)
+        elif command == "crypto":
+            response = self.get_crypto_price(args)
+        elif command == "gif":
+            response = self.get_gif_response(args)
+        elif command == "musk":
+            response = self.get_musk_post()
+        elif command == "trump":
+            response = self.get_trump_post()
+        elif command == "blaz":
+            response = self.handle_blaz_command(args)
+
+        if response and username:
+            self.send_response(channel_type, username, response)
+        elif response:
+            self.send_full_message(response)
+
+    def handle_public_trigger(self, username, message):
+        """Handle public message triggers with proper channel awareness."""
+        if message.startswith("!"):
+            parts = message[1:].split(maxsplit=1)
+            command = parts[0]
+            args = parts[1] if len(parts) > 1 else ""
+            
+            # Special command handlers
+            if command == "doc":
+                self.handle_doc_command(args, username, channel_type='public')
+            elif command == "said":
+                self.handle_said_command(username, message)
+            elif command == "pod":
+                self.handle_pod_command(username, message)
+            elif command == "mail":
+                self.handle_mail_command(message, username, channel_type='public')
+            elif command == "msg":
+                parts = args.split(maxsplit=1)
+                if len(parts) >= 2:
+                    self.handle_msg_command(parts[0], parts[1], username)
+            else:
+                # Use generic command handler
+                self.handle_command(command, args, username, 'whisper' if self.no_spam_mode.get() else 'public')
+
+    def handle_private_trigger(self, username, message):
+        """Handle private message triggers."""
+        if message.startswith("!"):
+            parts = message[1:].split(maxsplit=1)
+            command = parts[0]
+            args = parts[1] if len(parts) > 1 else ""
+            
+            # Special command handlers first
+            if command == "nospamperm":
+                self.handle_nospamperm_command(username)
+            elif command == "nospam":
+                self.handle_nospam_command(username)
+            elif command == "doc":
+                self.handle_doc_command(args, username, channel_type='whisper')
+            elif command == "said":
+                self.handle_said_command(username, message, channel_type='whisper')
+            elif command == "pod":
+                self.handle_pod_command(username, message, channel_type='whisper')
+            elif command == "mail":
+                self.handle_mail_command(message, username, channel_type='whisper')
+            elif command == "msg":
+                parts = args.split(maxsplit=1)
+                if len(parts) >= 2:
+                    self.handle_msg_command(parts[0], parts[1], username)
+            else:
+                # Use generic command handler
+                self.handle_command(command, args, username, 'whisper')
+        else:
+            # Handle non-command messages as chat queries
+            response = self.get_chatgpt_response(message, username=username)
+            self.send_response('whisper', username, response)
+
+    def handle_page_trigger(self, username, module_or_channel, message):
+        """Handle page message triggers."""
+        if message.startswith("!"):
+            parts = message[1:].split(maxsplit=1)
+            command = parts[0]
+            args = parts[1] if len(parts) > 1 else ""
+            
+            # Special command handlers
+            if command == "doc":
+                self.handle_doc_command(args, username, channel_type='page')
+            elif command == "said":
+                self.handle_said_command(username, message, is_page=True, module_or_channel=module_or_channel)
+            elif command == "pod":
+                self.handle_pod_command(username, message, is_page=True, module_or_channel=module_or_channel)
+            elif command == "mail":
+                self.handle_mail_command(message, username, channel_type='page')
+            elif command == "msg":
+                parts = args.split(maxsplit=1)
+                if len(parts) >= 2:
+                    self.handle_msg_command(parts[0], parts[1], username)
+            else:
+                # Use generic command handler
+                self.handle_command(command, args, username, 'page')
+        else:
+            # Handle non-command messages as chat queries
+            response = self.get_chatgpt_response(message, username=username)
+            self.send_response('page', username, response)
 
 def main():
     app = None  # Ensure app is defined
