@@ -721,6 +721,7 @@ class BBSBotApp:
         data = data.replace('\r\n', '\n').replace('\r', '\n')
         self.partial_line += data
         lines = self.partial_line.split("\n")
+        self.partial_line = lines[-1]  # Keep the last partial line
 
         for line in lines[:-1]:
             self.append_terminal_text(line + "\n", "normal")
@@ -728,37 +729,45 @@ class BBSBotApp:
             # Parse the message
             msg_type, username, content = self.parse_message(line)
             if msg_type and username and content:
-                # Process the message
-                self.process_message(msg_type, username, content)
-
-                # Store public messages for !said command
-                if msg_type == 'public' and username.lower() != 'ultron':
-                    self.store_public_message(username, content)
-
-            # Always update user tracking
-            self.update_user_tracking(line)
-
-        self.partial_line = lines[-1]
-
-    def update_user_tracking(self, clean_line):
-        """Handle user tracking updates regardless of nospam mode."""
-        # Update chat members list
-        if "@" in clean_line:
-            self.user_list_buffer.append(clean_line)
-
-        if re.search(r'(is|are) here with you\.$', clean_line.strip()):
-            if (clean_line not in self.user_list_buffer) and (len(self.user_list_buffer) > 0):
-                self.user_list_buffer.append(clean_line)
-            self.update_chat_members(self.user_list_buffer)
-            self.user_list_buffer = []
-
-        # Update last seen times
-        if match := re.match(r'(.+?)@(.+?) just joined this channel!', clean_line):
-            username = match.group(1)
-            self.last_seen[username.lower()] = int(time.time())
-
-        # Handle previous line tracking
-        self.previous_line = clean_line
+                # Ignore messages from Ultron itself
+                if username.lower() == 'ultron':
+                    continue
+                    
+                # Handle different message types
+                if msg_type == 'page':
+                    if content.startswith('!'):
+                        response = self.get_command_response(content, username)
+                    else:
+                        response = self.get_chatgpt_response(content, username=username)
+                    if response:
+                        self.send_page_response(username, 'teleconference', response)
+                    
+                elif msg_type == 'whisper':
+                    if content.startswith('!'):
+                        response = self.get_command_response(content, username)
+                    else:
+                        response = self.get_chatgpt_response(content, username=username)
+                    if response:
+                        self.send_private_message(username, response)
+                    
+                elif msg_type == 'direct':
+                    if content.startswith('!'):
+                        response = self.get_command_response(content, username)
+                    else:
+                        response = self.get_chatgpt_response(content, username=username)
+                    if response:
+                        if self.no_spam_mode.get() or self.no_spam_perm:
+                            self.send_private_message(username, response)
+                        else:
+                            self.send_direct_message(username, response)
+                        
+                elif msg_type == 'public' and content.startswith('!'):
+                    response = self.get_command_response(content, username)
+                    if response:
+                        if self.no_spam_mode.get() or self.no_spam_perm:
+                            self.send_private_message(username, response)
+                        else:
+                            self.send_full_message(response)
 
     def update_chat_members(self, lines_with_users):
         """
@@ -1254,24 +1263,25 @@ class BBSBotApp:
         Send a direct message to the specified user.
         """
         chunks = self.chunk_message(message, 250)
-        for chunk in chunks:
+        for i, chunk in enumerate(chunks):
             full_message = f">{username} {chunk}"
             asyncio.run_coroutine_threadsafe(self._send_message(full_message + "\r\n"), self.loop)
             self.append_terminal_text(full_message + "\n", "normal")
+            if i < len(chunks) - 1:
+                time.sleep(0.5)  # Add 0.5 second delay between chunks
 
     def get_weather_response(self, args):
-        """Fetch weather info and return the response as a string."""
+        """Fetch weather info and return a ChatGPT-generated response as a string."""
         key = self.weather_api_key.get()
         if not key:
             return "Weather API key is missing."
 
-        # Split args into command, city, and state
+        # Split args into command, city, and state 
         parts = args.strip().split(maxsplit=3)
         if len(parts) < 3:
             return "Usage: !weather <current/forecast> <city> <state>"
 
         command, city, state = parts[0], parts[1], parts[2]
-
         if command.lower() not in ['current', 'forecast']:
             return "Please specify either 'current' or 'forecast' as the first argument."
 
@@ -1280,70 +1290,73 @@ class BBSBotApp:
 
         location = f"{city},{state}"
 
-        if command.lower() == 'current':
-            # Get current weather
-            url = "http://api.openweathermap.org/data/2.5/weather"
-            params = {
-                "q": location,
-                "appid": key,
-                "units": "imperial"
-            }
-            try:
+        try:
+            if command.lower() == 'current':
+                url = "http://api.openweathermap.org/data/2.5/weather"
+                params = {
+                    "q": location,
+                    "appid": key,
+                    "units": "imperial"
+                }
                 r = requests.get(url, params=params, timeout=10)
                 r.raise_for_status()
                 data = r.json()
+                
                 if data.get("cod") != 200:
                     return f"Could not get weather for '{location}'."
-                
-                desc = data["weather"][0]["description"]
-                temp_f = data["main"]["temp"]
-                feels_like = data["main"]["feels_like"]
-                humidity = data["main"]["humidity"]
-                wind_speed = data["wind"]["speed"]
-                precipitation = data.get("rain", {}).get("1h", 0) + data.get("snow", {}).get("1h", 0)
 
-                return (
-                    f"Current weather in {city.title()}, {state.upper()}: {desc}, {temp_f:.1f}°F "
-                    f"(feels like {feels_like:.1f}°F), Humidity {humidity}%, Wind {wind_speed} mph, "
-                    f"Precipitation {precipitation} mm."
+                # Prepare weather info dictionary
+                weather_info = {
+                    "location": f"{city.title()}, {state.upper()}",
+                    "description": data["weather"][0]["description"],
+                    "temp_f": data["main"]["temp"],
+                    "feels_like": data["main"]["feels_like"],
+                    "humidity": data["main"]["humidity"],
+                    "wind_speed": data["wind"]["speed"],
+                    "precipitation": data.get("rain", {}).get("1h", 0) + data.get("snow", {}).get("1h", 0)
+                }
+
+                # Create a concise single-line response
+                response = (
+                    f"Weather in {weather_info['location']}: {weather_info['description']}, "
+                    f"{weather_info['temp_f']:.1f}°F (feels like {weather_info['feels_like']:.1f}°F), "
+                    f"humidity {weather_info['humidity']}%, wind {weather_info['wind_speed']} mph"
                 )
-            except requests.exceptions.RequestException as e:
-                return f"Error fetching weather: {str(e)}"
 
-        else:  # forecast
-            # Get 5-day forecast
-            url = "http://api.openweathermap.org/data/2.5/forecast"
-            params = {
-                "q": location,
-                "appid": key,
-                "units": "imperial"
-            }
-            try:
+            else:  # forecast
+                url = "http://api.openweathermap.org/data/2.5/forecast"
+                params = {
+                    "q": location,
+                    "appid": key,
+                    "units": "imperial"
+                }
                 r = requests.get(url, params=params, timeout=10)
                 r.raise_for_status()
                 data = r.json()
+                
                 if data.get("cod") != "200":
                     return f"Could not get forecast for '{location}'."
 
-                # Get next 3 days forecast (excluding today)
+                # Create a concise 3-day forecast
                 forecasts = []
                 current_date = None
                 for item in data['list']:
                     date = time.strftime('%Y-%m-%d', time.localtime(item['dt']))
                     if date == time.strftime('%Y-%m-%d'):  # Skip today
                         continue
-                    if date != current_date and len(forecasts) < 3:  # Get next 3 days
+                    if date != current_date and len(forecasts) < 3:
                         current_date = date
                         temp = item['main']['temp']
                         desc = item['weather'][0]['description']
-                        forecasts.append(f"{time.strftime('%A', time.localtime(item['dt']))}: {desc}, {temp:.1f}°F")
+                        day = time.strftime('%A', time.localtime(item['dt']))
+                        forecasts.append(f"{day}: {desc}, {temp:.1f}°F")
 
-                return (
-                    f"3-day forecast for {city.title()}, {state.upper()}: " + 
-                    ", ".join(forecasts)
-                )
-            except requests.exceptions.RequestException as e:
-                return f"Error fetching weather: {str(e)}"
+                response = f"3-day forecast for {city.title()}, {state.upper()}: " + " | ".join(forecasts)
+
+            return response
+
+        except requests.exceptions.RequestException as e:
+            return f"Error fetching weather: {str(e)}"
 
     def get_youtube_response(self, query):
         """Perform a YouTube search and return the response as a string."""
@@ -1622,9 +1635,16 @@ class BBSBotApp:
             print(f"Sent to BBS: {message}")
 
     async def _send_message(self, message):
-        """Coroutine to send a message."""
-        self.writer.write(message)
-        await self.writer.drain()
+        """Coroutine to send a message with error handling."""
+        try:
+            if self.writer:
+                self.writer.write(message)
+                await asyncio.wait_for(self.writer.drain(), timeout=3.0)
+        except asyncio.TimeoutError:
+            print(f"Timeout sending message: {message}")
+            # Optionally retry or handle the timeout
+        except Exception as e:
+            print(f"Error sending message: {str(e)}")
 
     def send_full_message(self, message):
         """
@@ -1978,13 +1998,15 @@ class BBSBotApp:
 
     def send_private_message(self, username, message):
         """
-        Send a private message to the specified user.
+        Send a private message to the specified user with delays between chunks.
         """
-        chunks = self.chunk_message(message, 250)
-        for chunk in chunks:
+        chunks = self.chunk_message(message, 200)  # Changed to 200 characters
+        for i, chunk in enumerate(chunks):
             full_message = f"Whisper to {username} {chunk}"
             asyncio.run_coroutine_threadsafe(self._send_message(full_message + "\r\n"), self.loop)
             self.append_terminal_text(full_message + "\n", "normal")
+            if i < len(chunks) - 1:
+                time.sleep(0.5)  # Add 0.5 second delay between chunks
 
     
 
@@ -2661,8 +2683,12 @@ class BBSBotApp:
 
     def handle_msg_command(self, recipient, message, sender):
         """Handle the !msg command to leave a message for another user."""
+        # When in no_spam mode, always respond via whisper
+        if self.no_spam_mode.get() or self.no_spam_perm:
+            self.send_private_message(sender, f"Message for {recipient} saved. They will receive it the next time they are seen in the chatroom.")
+        else:
+            self.send_full_message(f"Message for {recipient} saved. They will receive it the next time they are seen in the chatroom.")
         self.save_pending_message(recipient, sender, message)
-        self.send_full_message(f"Message for {recipient} saved. They will receive it the next time they are seen in the chatroom.")
 
     def check_and_send_pending_messages(self, username):
         """Check for and send any pending messages for the given username."""
@@ -2880,11 +2906,15 @@ class BBSBotApp:
             parts = message.split(maxsplit=2)
             if len(parts) < 3:
                 response = "Usage: !msg <username> <message>"
+                if self.no_spam_mode.get() or self.no_spam_perm:
+                    self.send_private_message(username, response)
+                else:
+                    self.send_full_message(response)
             else:
                 recipient = parts[1]
                 msg_content = parts[2]
                 self.handle_msg_command(recipient, msg_content, username)
-                return
+            return
 
         if response:
             if self.no_spam_mode.get():
@@ -3211,77 +3241,111 @@ class BBSBotApp:
         ansi_escape_regex = re.compile(r'\x1b\[(.*?)m')
         clean_line = ansi_escape_regex.sub('', line)
 
+        # Define patterns with their corresponding message types
         patterns = {
-            'whisper': (r'From (.+?) \(whispered\): (.+)', lambda m: (m.group(1), m.group(2))),
-            'page': (r'(.+?) is paging you (?:from|via) (.+?): (.+)', lambda m: (m.group(1), m.group(3))),
-            'direct': (r'From (.+?) \(to you\): (.+)', lambda m: (m.group(1), m.group(2))),
-            'public': (r'From (.+?): (.+)', lambda m: (m.group(1), m.group(2)))
+            'page': (r'(.+?) is paging you from (.+?): (.+)', 
+                    lambda m: ('page', m.group(1), m.group(3))),
+            'whisper': (r'From (.+?) \(whispered\): (.+)',
+                       lambda m: ('whisper', m.group(1), m.group(2))),
+            'direct': (r'From (.+?) \(to you\): (.+)',
+                      lambda m: ('direct', m.group(1), m.group(2))),
+            'public': (r'From (.+?): (.+)',
+                      lambda m: ('public', m.group(1), m.group(2)))
         }
 
         for msg_type, (pattern, extract) in patterns.items():
             if match := re.match(pattern, clean_line):
-                username, content = extract(match)
+                msg_type, username, content = extract(match)
+                # Ignore public messages containing 'ultron'
+                if msg_type == 'public' and 'ultron' in content.lower():
+                    return None, None, None
                 return msg_type, username, content
 
         return None, None, None
 
     def process_message(self, msg_type, username, content):
-        """Process messages according to type and nospam states."""
-        # Always handle !nospamperm first (whispers only)
-        if "!nospamperm" in content:
-            if msg_type == "whisper":
-                self.no_spam_perm = not self.no_spam_perm
-                state = "permanently enabled" if self.no_spam_perm else "disabled"
-                self.send_private_message(username, f"No Spam Permanent Lock has been {state}.")
-                self.save_no_spam_state()
+        """Process messages according to type and content."""
+        if not msg_type or not username or not content:
             return
 
-        # Then handle !nospam if allowed
-        if "!nospam" in content:
-            if self.no_spam_perm:
-                self.send_private_message(username, "Not possible - No Spam Mode is permanently locked.")
-                return
-            
-            # Only allow toggle via whisper/page
-            if msg_type in ["whisper", "page"]:
+        # Handle !nospam command specially (always via whisper)
+        if content.strip() == "!nospam":
+            if not self.no_spam_perm:
                 self.no_spam_mode.set(not self.no_spam_mode.get())
-                state = "ON" if self.no_spam_mode.get() else "OFF"
-                self.send_private_message(username, f"No Spam Mode is now {state}")
+                state = "enabled" if self.no_spam_mode.get() else "disabled"
+                self.send_private_message(username, f"No Spam Mode has been {state}.")
                 self.save_no_spam_state()
             else:
-                self.send_private_message(username, "The !nospam command must be sent via whisper or page.")
+                self.send_private_message(username, "Not possible - No Spam Mode is permanently locked.")
             return
 
-        # Determine response channel
-        response_channel = self.determine_response_channel(
-            msg_type,
-            self.no_spam_mode.get(),
-            self.no_spam_perm
-        )
+        # Handle different message types
+        if msg_type == 'page':
+            if content.startswith('!'):
+                response = self.get_command_response(content, username)
+            else:
+                response = self.get_chatgpt_response(content, username=username)
+            if response:
+                self.send_page_response(username, 'teleconference', response)
+                
+        elif msg_type == 'whisper':
+            if content.startswith('!'):
+                response = self.get_command_response(content, username)
+            else:
+                response = self.get_chatgpt_response(content, username=username)
+            if response:
+                self.send_private_message(username, response)
+                
+        elif msg_type == 'direct':
+            if content.startswith('!'):
+                response = self.get_command_response(content, username)
+            else:
+                response = self.get_chatgpt_response(content, username=username)
+            if response:
+                if self.no_spam_mode.get() or self.no_spam_perm:
+                    self.send_private_message(username, response)
+                else:
+                    self.send_direct_message(username, response)
+                
+        elif msg_type == 'public':
+            if content.startswith('!'):
+                response = self.get_command_response(content, username)
+                if response:
+                    if self.no_spam_mode.get() or self.no_spam_perm:
+                        self.send_private_message(username, response)
+                    else:
+                        self.send_full_message(response)
 
-        # If it's a whisper/page without a command trigger, treat it as a chat query
-        if msg_type in ["whisper", "page"] and not content.startswith('!'):
-            response = self.get_chatgpt_response(content, username=username)
-            self.send_response(response_channel, username, response)
-            return
-
-        # Process command and send response
-        if response := self.get_command_response(content, username):
-            self.send_response(response_channel, username, response)
-
-    def send_response(self, channel_type, username, response):
-        """Send response through the appropriate channel."""
-        if not response:
-            return
-
-        chunks = self.chunk_message(response, 250)
+    def send_page_response(self, username, channel, message):
+        """Send a page response via /p command."""
+        chunks = self.chunk_message(message, 250)
         for chunk in chunks:
-            if channel_type == 'whisper':
-                self.send_private_message(username, chunk)
-            elif channel_type == 'page':
-                self.send_page_response(username, 'majorlink', chunk)
-            else:  # public or direct
-                self.send_full_message(chunk)
+            full_message = f"/p {username} {chunk}"
+            asyncio.run_coroutine_threadsafe(self._send_message(full_message + "\r\n"), self.loop)
+            time.sleep(0.5)  # Add delay between chunks
+
+    def send_private_message(self, username, message):
+        """Send a private message via whisper."""
+        chunks = self.chunk_message(message, 250)
+        for chunk in chunks:
+            full_message = f"/{username} {chunk}"
+            asyncio.run_coroutine_threadsafe(self._send_message(full_message + "\r\n"), self.loop)
+            time.sleep(0.5)  # Add delay between chunks
+
+    def send_direct_message(self, username, message):
+        """Send a direct public message."""
+        chunks = self.chunk_message(message, 250)
+        for chunk in chunks:
+            full_message = f">{username} {chunk}"
+            asyncio.run_coroutine_threadsafe(self._send_message(full_message + "\r\n"), self.loop)
+            time.sleep(0.5)  # Add delay between chunks
+
+    def send_full_message(self, message):
+        """Send a public message."""
+        chunks = self.chunk_message(message, 250)
+        for chunk in chunks:
+            asyncio.run_coroutine_threadsafe(self._send_message(chunk + "\r\n"), self.loop)
+            time.sleep(0.5)  # Add delay between chunks
 
     def get_command_response(self, content, username=None):
         """Get appropriate response for a command."""
