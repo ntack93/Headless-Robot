@@ -2451,12 +2451,29 @@ class BBSBotApp:
     def get_stock_price(self, symbol):
         """Fetch the current price of a stock."""
         api_key = self.alpha_vantage_api_key.get()
+        if not api_key:
+            return "Alpha Vantage API key is missing."
+        if not symbol:
+            return "Please provide a stock symbol."
+            
         url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={symbol}&apikey={api_key}"
         try:
             response = requests.get(url)
             data = response.json()
-            price = data["Global Quote"]["05. price"]
-            return f"{symbol.upper()}: ${price}"
+            
+            # Check for error messages
+            if "Error Message" in data:
+                return f"Error: {data['Error Message']}"
+                
+            if "Global Quote" not in data or not data["Global Quote"]:
+                return f"No data found for symbol {symbol}"
+                
+            quote = data["Global Quote"]
+            price = quote.get("05. price", "N/A")
+            change = quote.get("09. change", "N/A")
+            percent = quote.get("10. change percent", "N/A")
+            
+            return f"{symbol.upper()}: ${price} ({change} | {percent})"
         except Exception as e:
             return f"Error fetching stock price: {str(e)}"
 
@@ -3235,12 +3252,18 @@ class BBSBotApp:
                 self.send_private_message(username, "The !nospam command must be sent via whisper or page.")
             return
 
-        # Determine response channel for other commands
+        # Determine response channel
         response_channel = self.determine_response_channel(
             msg_type,
             self.no_spam_mode.get(),
             self.no_spam_perm
         )
+
+        # If it's a whisper/page without a command trigger, treat it as a chat query
+        if msg_type in ["whisper", "page"] and not content.startswith('!'):
+            response = self.get_chatgpt_response(content, username=username)
+            self.send_response(response_channel, username, response)
+            return
 
         # Process command and send response
         if response := self.get_command_response(content, username):
@@ -3278,7 +3301,7 @@ class BBSBotApp:
             'pic': lambda: self.get_pic_response(args),
             'help': lambda: self.get_help_response(),
             'seen': lambda: self.get_seen_response(args),
-            'stocks': lambda: self.get_stock_price(args),
+            'stocks': lambda: self.get_stock_price(args.strip()),
             'crypto': lambda: self.get_crypto_price(args),
             'gif': lambda: self.get_gif_response(args),
             'musk': lambda: self.get_musk_post(),
