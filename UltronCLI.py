@@ -765,7 +765,6 @@ class BBSBotCLI:
 
     def process_data_chunk(self, data):
         """Process incoming data chunks."""
-        # ...existing code...
 
         # Check for direct messages
         direct_message_match = re.match(r'From (.+?) \(to you\): (.+)', clean_line)
@@ -778,7 +777,6 @@ class BBSBotCLI:
             )
             return
 
-        # ...rest of existing code...
 
 def main():
     parser = argparse.ArgumentParser(description='BBS Chatbot CLI')
