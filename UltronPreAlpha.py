@@ -90,10 +90,6 @@ class BBSBotApp:
         self.multi_line_buffer = {}    # Maps username -> accumulated message string
         self.multiline_timeout = {}    # Maps username -> timeout ID (from after())
 
-        # Add these new dictionaries after other instance variables
-        self.join_times = {}        # Maps username -> join timestamp
-        self.last_spoke_times = {}  # Maps username -> last spoke timestamp
-
         # For best ANSI alignment, recommend a CP437-friendly monospace font:
         self.font_name = tk.StringVar(value="Courier New")
         self.font_size = tk.IntVar(value=10)
@@ -119,6 +115,7 @@ class BBSBotApp:
 
         self.chat_members = set()  # Set to keep track of chat members
         self.last_seen = self.load_last_seen()  # Load last seen timestamps from file
+        self.last_spoke = self.load_last_spoke()  # Load last spoke timestamps from file
 
         # Build UI
         self.build_ui()
@@ -793,16 +790,12 @@ class BBSBotApp:
                         else:
                             self.send_full_message(response)
 
-            # Add this inside the loop that processes lines:
-            # Update last spoke time when someone sends a message
-            msg_type, username, content = self.parse_message(clean_line)
-            if msg_type and username:
-                username = username.lower()
-                self.last_spoke_times[username] = int(time.time())
-                
-                # Track join times when users enter
-                if "just joined this channel!" in clean_line:
-                    self.join_times[username] = int(time.time())
+            # Update last spoke timestamp for public messages
+            public_trigger_match = re.match(r'From (.+?): (.+)', clean_line)
+            if public_trigger_match:
+                username = public_trigger_match.group(1)
+                self.last_spoke[username.lower()] = int(time.time())
+                self.save_last_spoke()
 
     def update_chat_members(self, lines_with_users):
         """
@@ -1168,11 +1161,8 @@ class BBSBotApp:
         elif command == "!musk":
             response = self.get_musk_post()
         elif command == "!since":
-            if not query:
-                self.send_private_message(username, "Usage: !since <username>")
-                return
-            self.handle_since_command(query, username, 'whisper')
-            return
+            target = query if query else username
+            response = self.handle_since_command(target)
         else:
             # No command matched - treat as chat query
             response = self.get_chatgpt_response(message, username=username)
@@ -1249,11 +1239,8 @@ class BBSBotApp:
         elif "!musk" in message:
             response = self.get_musk_post()
         elif "!since" in message:
-            target = message.split("!since", 1)[1].strip()
-            if target:
-                self.handle_since_command(target, username, 'page')
-            else:
-                self.send_page_response(username, module_or_channel, "Usage: !since <username>")
+            parts = message.split("!since", 1)[1].strip()
+            response = self.handle_since_command(parts if parts else username)
 
         if response:
             self.send_page_response(username, module_or_channel, response)
@@ -1302,6 +1289,9 @@ class BBSBotApp:
                 return
         elif "!musk" in message:
             response = self.get_musk_post()
+        elif "!since" in message:
+            target = message.split("!since", 1)[1].strip()
+            response = self.handle_since_command(target if target else username)
         else:
             response = self.get_chatgpt_response(message, direct=True, username=username)
 
@@ -1947,7 +1937,7 @@ class BBSBotApp:
                     valid_commands = [
                         "!weather", "!yt", "!search", "!chat", "!news", "!map",
                         "!pic", "!polly", "!mp3yt", "!help", "!seen", "!greeting",
-                        "!stocks", "!crypto", "!timer", "!gif", "!msg", "!doc", "!pod", "!said", "!trump", "!mail", "!blaz", "!musk"
+                        "!stocks", "!crypto", "!timer", "!gif", "!msg", "!doc", "!pod", "!said", "!trump", "!mail", "!blaz", "!musk", "!since"
                     ]
                     if not any(message.startswith(cmd) for cmd in valid_commands):
                         return
@@ -2040,11 +2030,13 @@ class BBSBotApp:
                         response = self.get_musk_post()
                         self.send_full_message(response)
                     elif message.startswith("!since"):
-                        target = message.split("!since", 1)[1].strip()
-                        if target:
-                            self.handle_since_command(target, sender, 'public')
-                        else:
-                            self.send_full_message("Usage: !since <username>")
+                        parts = message.split("!since", 1)[1].strip()
+                        response = self.handle_since_command(parts if parts else sender)
+                        if response:
+                            if self.no_spam_mode.get() or self.no_spam_perm:
+                                self.send_private_message(sender, response)
+                            else:
+                                self.send_full_message(response)
 
         # Update the previous line
         self.previous_line = clean_line
@@ -2668,7 +2660,7 @@ class BBSBotApp:
         if not self.split_view_enabled:
             self.split_view_enabled = True
             main_container = self.master.nametowidget('main_frame')
-            main_container.pack_forget()
+            main_container.pack-forget()
 
             split_frame = ttk.Frame(self.master)
             split_frame.pack(fill=tk.BOTH, expand=True)
@@ -2970,6 +2962,9 @@ class BBSBotApp:
                 msg_content = parts[2]
                 self.handle_msg_command(recipient, msg_content, username)
             return
+        elif "!since" in message:
+            parts = message.split("!since", 1)[1].strip()
+            response = self.handle_since_command(parts if parts else username)
 
         if response:
             if self.no_spam_mode.get():
@@ -3463,49 +3458,47 @@ class BBSBotApp:
             'msg': lambda: self.handle_msg_command(*args.split(maxsplit=1), username) if len(args.split(maxsplit=1)) == 2 else "Usage: !msg <username> <message>",
             'nospam': lambda: self.no_spam_mode.set(not self.no_spam_mode.get()) or f"No Spam Mode has been {'enabled' if self.no_spam_mode.get() else 'disabled'}.",
             'nospamperm': lambda: "This command is only available via whisper.",
-            'since': lambda: self.handle_since_command(args, username, 'command') if args else "Usage: !since <username>"
+            'since': lambda: self.handle_since_command(args if args else username)
         }
 
         handler = command_handlers.get(command)
         return handler() if handler else None
 
-    def handle_since_command(self, target_username, sender_username, msg_type):
-        """Handle !since command to show time since user joined or last spoke."""
-        target = target_username.lower()
-        
-        # Get join time
-        join_time = self.join_times.get(target)
-        last_spoke = self.last_spoke_times.get(target)
-        
-        if not join_time and not last_spoke:
-            response = f"No record found for {target_username}"
-        else:
-            current_time = int(time.time())
-            messages = []
-            
-            if join_time:
-                join_diff = current_time - join_time
-                hours, rem = divmod(join_diff, 3600)
-                minutes, seconds = divmod(rem, 60)
-                messages.append(f"joined {int(hours)}h {int(minutes)}m {int(seconds)}s ago")
-            
-            if last_spoke:
-                spoke_diff = current_time - last_spoke
-                hours, rem = divmod(spoke_diff, 3600)
-                minutes, seconds = divmod(rem, 60)
-                messages.append(f"last spoke {int(hours)}h {int(minutes)}m {int(seconds)}s ago")
-            
-            response = f"{target_username} " + " and ".join(messages)
+    def handle_since_command(self, username):
+        """Handle the !since command to report when a user was last seen and last spoke."""
+        username_lower = username.lower()
+        last_seen_lower = {k.lower(): v for k, v in self.last_seen.items()}
+        last_spoke_lower = {k.lower(): v for k, v in self.last_spoke.items()}
 
-        # Send response through appropriate channel
-        if msg_type == 'whisper':
-            self.send_private_message(sender_username, response)
-        elif msg_type == 'page':
-            self.send_page_response(sender_username, 'teleconference', response)
-        elif msg_type == 'command':
-            return response
-        else:  # public
-            self.send_full_message(response)
+        if username_lower in last_seen_lower:
+            last_seen_time = last_seen_lower[username_lower]
+            last_seen_str = time.strftime('%Y-%m-%d %H:%M:%S GMT', time.gmtime(last_seen_time))
+        else:
+            last_seen_str = "never"
+
+        if username_lower in last_spoke_lower:
+            last_spoke_time = last_spoke_lower[username_lower]
+            last_spoke_str = time.strftime('%Y-%m-%d %H:%M:%S GMT', time.gmtime(last_spoke_time))
+        else:
+            last_spoke_str = "never"
+
+        response = (
+            f"{username} was last seen entering the chatroom on {last_seen_str}.\n"
+            f"{username} last spoke in the public channel on {last_spoke_str}."
+        )
+        return response
+
+    def load_last_spoke(self):
+        """Load the last spoke dictionary from a file."""
+        if os.path.exists("last_spoke.json"):
+            with open("last_spoke.json", "r") as file:
+                return json.load(file)
+        return {}
+
+    def save_last_spoke(self):
+        """Save the last spoke dictionary to a file."""
+        with open("last_spoke.json", "w") as file:
+            json.dump(self.last_spoke, file)
 
 def main():
     app = None  # Ensure app is defined
