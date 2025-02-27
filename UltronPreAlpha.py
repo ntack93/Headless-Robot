@@ -3395,12 +3395,16 @@ class BBSBotApp:
             time.sleep(0.5)  # Add delay between chunks
 
     def send_private_message(self, username, message):
-        """Send a private message via whisper."""
-        chunks = self.chunk_message(message, 250)
-        for chunk in chunks:
-            full_message = f"/{username} {chunk}"
+        """
+        Send a private message to the specified user with delays between chunks.
+        """
+        chunks = self.chunk_message(message, 200)  # Changed to 200 characters
+        for i, chunk in enumerate(chunks):
+            full_message = f"Whisper to {username} {chunk}"
             asyncio.run_coroutine_threadsafe(self._send_message(full_message + "\r\n"), self.loop)
-            time.sleep(0.5)  # Add delay between chunks
+            self.append_terminal_text(full_message + "\n", "normal")
+            if i < len(chunks) - 1:
+                time.sleep(0.5)  # Add 0.5 second delay between chunks
 
     def send_direct_message(self, username, message):
         """Send a direct public message."""
