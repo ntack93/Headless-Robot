@@ -90,6 +90,10 @@ class BBSBotApp:
         self.multi_line_buffer = {}    # Maps username -> accumulated message string
         self.multiline_timeout = {}    # Maps username -> timeout ID (from after())
 
+        # Add these new dictionaries after other instance variables
+        self.join_times = {}        # Maps username -> join timestamp
+        self.last_spoke_times = {}  # Maps username -> last spoke timestamp
+
         # For best ANSI alignment, recommend a CP437-friendly monospace font:
         self.font_name = tk.StringVar(value="Courier New")
         self.font_size = tk.IntVar(value=10)
@@ -789,6 +793,17 @@ class BBSBotApp:
                         else:
                             self.send_full_message(response)
 
+            # Add this inside the loop that processes lines:
+            # Update last spoke time when someone sends a message
+            msg_type, username, content = self.parse_message(clean_line)
+            if msg_type and username:
+                username = username.lower()
+                self.last_spoke_times[username] = int(time.time())
+                
+                # Track join times when users enter
+                if "just joined this channel!" in clean_line:
+                    self.join_times[username] = int(time.time())
+
     def update_chat_members(self, lines_with_users):
         """
         lines_with_users: list of lines that contain '@', culminating in 'are here with you.'
@@ -1152,6 +1167,12 @@ class BBSBotApp:
             response = self.get_gif_response(query)
         elif command == "!musk":
             response = self.get_musk_post()
+        elif command == "!since":
+            if not query:
+                self.send_private_message(username, "Usage: !since <username>")
+                return
+            self.handle_since_command(query, username, 'whisper')
+            return
         else:
             # No command matched - treat as chat query
             response = self.get_chatgpt_response(message, username=username)
@@ -1227,6 +1248,12 @@ class BBSBotApp:
                 self.send_page_response(username, module_or_channel, 'Usage: !radio "search query"')
         elif "!musk" in message:
             response = self.get_musk_post()
+        elif "!since" in message:
+            target = message.split("!since", 1)[1].strip()
+            if target:
+                self.handle_since_command(target, username, 'page')
+            else:
+                self.send_page_response(username, module_or_channel, "Usage: !since <username>")
 
         if response:
             self.send_page_response(username, module_or_channel, response)
@@ -2012,6 +2039,12 @@ class BBSBotApp:
                     elif message.startswith("!musk"):
                         response = self.get_musk_post()
                         self.send_full_message(response)
+                    elif message.startswith("!since"):
+                        target = message.split("!since", 1)[1].strip()
+                        if target:
+                            self.handle_since_command(target, sender, 'public')
+                        else:
+                            self.send_full_message("Usage: !since <username>")
 
         # Update the previous line
         self.previous_line = clean_line
@@ -3429,11 +3462,50 @@ class BBSBotApp:
             'radio': lambda: self.handle_radio_command(args),
             'msg': lambda: self.handle_msg_command(*args.split(maxsplit=1), username) if len(args.split(maxsplit=1)) == 2 else "Usage: !msg <username> <message>",
             'nospam': lambda: self.no_spam_mode.set(not self.no_spam_mode.get()) or f"No Spam Mode has been {'enabled' if self.no_spam_mode.get() else 'disabled'}.",
-            'nospamperm': lambda: "This command is only available via whisper."
+            'nospamperm': lambda: "This command is only available via whisper.",
+            'since': lambda: self.handle_since_command(args, username, 'command') if args else "Usage: !since <username>"
         }
 
         handler = command_handlers.get(command)
         return handler() if handler else None
+
+    def handle_since_command(self, target_username, sender_username, msg_type):
+        """Handle !since command to show time since user joined or last spoke."""
+        target = target_username.lower()
+        
+        # Get join time
+        join_time = self.join_times.get(target)
+        last_spoke = self.last_spoke_times.get(target)
+        
+        if not join_time and not last_spoke:
+            response = f"No record found for {target_username}"
+        else:
+            current_time = int(time.time())
+            messages = []
+            
+            if join_time:
+                join_diff = current_time - join_time
+                hours, rem = divmod(join_diff, 3600)
+                minutes, seconds = divmod(rem, 60)
+                messages.append(f"joined {int(hours)}h {int(minutes)}m {int(seconds)}s ago")
+            
+            if last_spoke:
+                spoke_diff = current_time - last_spoke
+                hours, rem = divmod(spoke_diff, 3600)
+                minutes, seconds = divmod(rem, 60)
+                messages.append(f"last spoke {int(hours)}h {int(minutes)}m {int(seconds)}s ago")
+            
+            response = f"{target_username} " + " and ".join(messages)
+
+        # Send response through appropriate channel
+        if msg_type == 'whisper':
+            self.send_private_message(sender_username, response)
+        elif msg_type == 'page':
+            self.send_page_response(sender_username, 'teleconference', response)
+        elif msg_type == 'command':
+            return response
+        else:  # public
+            self.send_full_message(response)
 
 def main():
     app = None  # Ensure app is defined
