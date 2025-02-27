@@ -726,14 +726,34 @@ class BBSBotApp:
         for line in lines[:-1]:
             self.append_terminal_text(line + "\n", "normal")
             
-            # Parse the message
-            msg_type, username, content = self.parse_message(line)
+            # Remove ANSI codes for easier parsing
+            ansi_escape_regex = re.compile(r'\x1b\[(.*?)m')
+            clean_line = ansi_escape_regex.sub('', line)
+
+            # Check for private commands first 
+            private_message_match = re.match(r'From (.+?) \(whispered\): (.+)', clean_line)
+            if private_message_match:
+                username = private_message_match.group(1)
+                message = private_message_match.group(2)
+
+                # Handle !nospamperm and !nospam via whisper only
+                if message.strip() in ["!nospamperm", "!nospam"]:
+                    self.handle_private_trigger(username, message)
+                    continue
+
+            # Parse message for normal processing
+            msg_type, username, content = self.parse_message(clean_line)
             if msg_type and username and content:
                 # Ignore messages from Ultron itself
                 if username.lower() == 'ultron':
                     continue
                     
-                # Handle different message types
+                # Handle !nospam command when sent publicly by responding via whisper
+                if content.strip() == "!nospam":
+                    self.handle_private_trigger(username, content)
+                    continue
+                    
+                # Regular message handling
                 if msg_type == 'page':
                     if content.startswith('!'):
                         response = self.get_command_response(content, username)
@@ -949,23 +969,25 @@ class BBSBotApp:
 
     def handle_private_trigger(self, username, message):
         """Handle private message triggers and respond privately."""
-        # Handle !nospamperm command first
-        if message.strip() == "!nospamperm":
+        message = message.strip()
+        
+        # Handle nospamperm command
+        if message == "!nospamperm":
             self.no_spam_perm = not self.no_spam_perm
             state = "permanently enabled" if self.no_spam_perm else "disabled"
-            self.send_private_message(username, f"No Spam Permanent Lock has been {state}.")
+            self.send_private_message(username, f"No Spam Mode has been {state}.")
             self.save_no_spam_state()
             return
 
-        # Handle !nospam command next, but only if nospamperm is not enabled
-        if message.strip() == "!nospam":
+        # Handle nospam command
+        if message == "!nospam":
             if self.no_spam_perm:
                 self.send_private_message(username, "Not possible - No Spam Mode is permanently locked.")
-                return
-            self.no_spam_mode.set(not self.no_spam_mode.get())
-            state = "ON" if self.no_spam_mode.get() else "OFF"
-            self.send_private_message(username, f"No Spam Mode is now {state}")
-            self.save_no_spam_state()
+            else:
+                self.no_spam_mode.set(not self.no_spam_mode.get())
+                state = "enabled" if self.no_spam_mode.get() else "disabled"
+                self.send_private_message(username, f"No Spam Mode has been {state}.")
+                self.save_no_spam_state()
             return
 
         # Extract command and query for other commands
@@ -3241,6 +3263,13 @@ class BBSBotApp:
         ansi_escape_regex = re.compile(r'\x1b\[(.*?)m')
         clean_line = ansi_escape_regex.sub('', line)
 
+        # Handle whisper messages first
+        whisper_match = re.match(r'From (.+?) \(whispered\): (.+)', clean_line)
+        if whisper_match:
+            username = whisper_match.group(1)
+            content = whisper_match.group(2)
+            return 'whisper', username, content.strip()
+
         # Define patterns with their corresponding message types
         patterns = {
             'page': (r'(.+?) is paging you from (.+?): (.+)', 
@@ -3268,15 +3297,27 @@ class BBSBotApp:
         if not msg_type or not username or not content:
             return
 
-        # Handle !nospam command specially (always via whisper)
-        if content.strip() == "!nospam":
-            if not self.no_spam_perm:
+        content = content.strip()
+        
+        # Handle nospam commands
+        if content == "!nospamperm":
+            if msg_type == 'whisper':
+                self.no_spam_perm = not self.no_spam_perm  
+                state = "permanently enabled" if self.no_spam_perm else "disabled"
+                self.send_private_message(username, f"No Spam Mode has been {state}.")
+                self.save_no_spam_state()
+            else:
+                self.send_private_message(username, "The !nospamperm command must be sent via whisper.")
+            return
+
+        if content == "!nospam":
+            if self.no_spam_perm:
+                self.send_private_message(username, "Not possible - No Spam Mode is permanently locked.")
+            else:
                 self.no_spam_mode.set(not self.no_spam_mode.get())
                 state = "enabled" if self.no_spam_mode.get() else "disabled"
                 self.send_private_message(username, f"No Spam Mode has been {state}.")
                 self.save_no_spam_state()
-            else:
-                self.send_private_message(username, "Not possible - No Spam Mode is permanently locked.")
             return
 
         # Handle different message types
@@ -3354,6 +3395,12 @@ class BBSBotApp:
 
         command = content.split()[0][1:]  # Remove ! and get command name
         args = content[len(command)+2:].strip()  # Get everything after command
+
+        # Remove nospamperm handling from here since it should only be handled in whisper
+        if command == 'nospamperm':
+            return None  # Let process_message handle it
+        
+        # ...existing code...
 
         command_handlers = {
             'weather': lambda: self.get_weather_response(args),
