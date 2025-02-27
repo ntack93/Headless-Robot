@@ -794,7 +794,8 @@ class BBSBotApp:
             public_trigger_match = re.match(r'From (.+?): (.+)', clean_line)
             if public_trigger_match:
                 username = public_trigger_match.group(1)
-                self.last_spoke[username.lower()] = int(time.time())
+                base_username = username.split('@')[0]  # Strip domain part
+                self.last_spoke[base_username.lower()] = int(time.time())
                 self.save_last_spoke()
 
     def update_chat_members(self, lines_with_users):
@@ -3466,26 +3467,36 @@ class BBSBotApp:
 
     def handle_since_command(self, username):
         """Handle the !since command to report when a user was last seen and last spoke."""
-        username_lower = username.lower()
-        last_seen_lower = {k.lower(): v for k, v in self.last_seen.items()}
-        last_spoke_lower = {k.lower(): v for k, v in self.last_spoke.items()}
+        # Strip domain part if present
+        base_username = username.split('@')[0]
+        username_lower = base_username.lower()
+
+        # Create case-insensitive mappings with base usernames (no domains)
+        last_seen_lower = {k.split('@')[0].lower(): v for k, v in self.last_seen.items()}
+        last_spoke_lower = {k.split('@')[0].lower(): v for k, v in self.last_spoke.items()}
 
         if username_lower in last_seen_lower:
             last_seen_time = last_seen_lower[username_lower]
             last_seen_str = time.strftime('%Y-%m-%d %H:%M:%S GMT', time.gmtime(last_seen_time))
+            time_diff = int(time.time()) - last_seen_time
+            hours, remainder = divmod(time_diff, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            last_seen_str += f" ({hours}h {minutes}m {seconds}s ago)"
         else:
             last_seen_str = "never"
 
         if username_lower in last_spoke_lower:
             last_spoke_time = last_spoke_lower[username_lower]
             last_spoke_str = time.strftime('%Y-%m-%d %H:%M:%S GMT', time.gmtime(last_spoke_time))
+            time_diff = int(time.time()) - last_spoke_time
+            hours, remainder = divmod(time_diff, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            last_spoke_str += f" ({hours}h {minutes}m {seconds}s ago)"
         else:
             last_spoke_str = "never"
 
-        response = (
-            f"{username} was last seen entering the chatroom on {last_seen_str}.\n"
-            f"{username} last spoke in the public channel on {last_spoke_str}."
-        )
+        # Keep the response concise to avoid timeouts
+        response = f"{base_username} - Last seen: {last_seen_str} | Last spoke: {last_spoke_str}"
         return response
 
     def load_last_spoke(self):
