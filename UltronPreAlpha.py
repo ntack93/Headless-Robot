@@ -731,6 +731,41 @@ class BBSBotApp:
             ansi_escape_regex = re.compile(r'\x1b\[(.*?)m')
             clean_line = ansi_escape_regex.sub('', line)
 
+            # Update last seen and last spoke timestamps for any user activity
+            public_message_match = re.match(r'From (.+?): (.+)', clean_line)
+            whisper_match = re.match(r'From (.+?) \(whispered\): (.+)', clean_line)
+            direct_match = re.match(r'From (.+?) \(to you\): (.+)', clean_line)
+            page_match = re.match(r'(.+?) is paging you from (.+?): (.+)', clean_line)
+
+            current_time = int(time.time())
+            
+            # Update timestamps for any type of message
+            if public_message_match:
+                username = public_message_match.group(1)
+                base_username = username.split('@')[0]
+                self.last_seen[base_username.lower()] = current_time
+                self.last_spoke[base_username.lower()] = current_time
+            elif whisper_match:
+                username = whisper_match.group(1)
+                base_username = username.split('@')[0]
+                self.last_seen[base_username.lower()] = current_time
+                self.last_spoke[base_username.lower()] = current_time
+            elif direct_match:
+                username = direct_match.group(1)
+                base_username = username.split('@')[0]
+                self.last_seen[base_username.lower()] = current_time
+                self.last_spoke[base_username.lower()] = current_time
+            elif page_match:
+                username = page_match.group(1)
+                base_username = username.split('@')[0]
+                self.last_seen[base_username.lower()] = current_time
+                self.last_spoke[base_username.lower()] = current_time
+
+            # Save timestamps after any updates
+            if any([public_message_match, whisper_match, direct_match, page_match]):
+                self.save_last_seen()
+                self.save_last_spoke()
+
             # Check for private commands first 
             private_message_match = re.match(r'From (.+?) \(whispered\): (.+)', clean_line)
             if private_message_match:
@@ -800,52 +835,57 @@ class BBSBotApp:
 
     def update_chat_members(self, lines_with_users):
         """
-        lines_with_users: list of lines that contain '@', culminating in 'are here with you.'
-        We'll combine them all, remove ANSI codes, then parse out the user@host addresses and usernames.
+        Parse user list from the topic/banner message, handling both single and multi-line formats.
+        Updates chat members list and last seen timestamps.
         """
-        combined = " ".join(lines_with_users)  # join with space
-        print(f"[DEBUG] Combined user lines: {combined}")  # Debug statement
+        # Join all lines and normalize whitespace
+        combined = " ".join(line.strip() for line in lines_with_users.split('\n'))
+        print(f"[DEBUG] Combined user lines: {combined}")
 
         # Remove ANSI codes
         ansi_escape_regex = re.compile(r'\x1b\[(.*?)m')
         combined_clean = ansi_escape_regex.sub('', combined)
-        print(f"[DEBUG] Cleaned combined user lines: {combined_clean}")  # Debug statement
+        print(f"[DEBUG] Cleaned combined user lines: {combined_clean}")
 
-        # Refine regex to capture usernames and addresses
-        addresses = re.findall(r'\b\S+@\S+\.\S+\b', combined_clean)
-        print(f"[DEBUG] Regex match result: {addresses}")  # Debug statement
+        # Extract user section between Topic and "are here with you"
+        user_list_match = re.search(r'Topic:.*?\)\.\s*(.*?)\s*(?:are|is)\s+here with you', combined_clean, re.DOTALL)
+        if not user_list_match:
+            print("[DEBUG] Could not find user list section")
+            return
 
-        # Extract usernames from addresses
-        usernames = [address.split('@')[0] for address in addresses]
+        user_section = user_list_match.group(1)
+        print(f"[DEBUG] User section: {user_section}")
 
-        # Handle the case where the last user is listed without an email address
-        last_user_match = re.search(r'and (\S+) are here with you\.', combined_clean)
-        if last_user_match:
-            usernames.append(last_user_match.group(1))
+        # Split users by comma and handle 'and' conjunction
+        user_parts = user_section.replace(" and ", ", ").split(",")
+        
+        # Process each user entry
+        usernames = []
+        for part in user_parts:
+            clean_part = part.strip()
+            if clean_part:
+                # Extract username from email-style address
+                username = clean_part.split('@')[0]
+                if username:
+                    username = username.strip()  # Remove any whitespace
+                    usernames.append(username)
+                    # Update last seen timestamp for this user
+                    print(f"[DEBUG] Updating last seen for: {username}")
+                    self.last_seen[username.lower()] = int(time.time())
 
-        # Handle the case where users are listed without email addresses
-        user_without_domain_match = re.findall(r'\b\S+ is here with you\.', combined_clean)
-        for user in user_without_domain_match:
-            usernames.append(user.split()[0])
+        print(f"[DEBUG] Extracted usernames with timestamps: {usernames}")
 
-        print(f"[DEBUG] Extracted usernames: {usernames}")  # Debug statement
-
-        # Make them a set to avoid duplicates
+        # Update chat members set
         self.chat_members = set(usernames)
-        self.save_chat_members()  # Save updated chat members to DynamoDB
+        self.save_chat_members()
 
-        # Update last seen timestamps
-        current_time = int(time.time())
-        for member in self.chat_members:
-            self.last_seen[member.lower()] = current_time
+        # Save updated last seen timestamps
+        self.save_last_seen()
+        print(f"[DEBUG] Updated last seen timestamps: {self.last_seen}")
 
-        self.save_last_seen()  # Save updated last seen timestamps to file
-
-        print(f"[DEBUG] Updated chat members: {self.chat_members}")
-
-        # Check and send pending messages for new members
-        for new_member_username in usernames:
-            self.check_and_send_pending_messages(new_member_username)
+        # Check for pending messages
+        for username in usernames:
+            self.check_and_send_pending_messages(username)
 
     def save_chat_members(self):
         """Save chat members to DynamoDB."""
@@ -2507,16 +2547,26 @@ class BBSBotApp:
             return f"{username} has not been seen in the chatroom."
 
     def save_last_seen(self):
-        """Save the last seen dictionary to a file."""
-        with open("last_seen.json", "w") as file:
-            json.dump(self.last_seen, file)
+        """Save the last seen dictionary to a file with error handling."""
+        try:
+            with open("last_seen.json", "w") as file:
+                json.dump(self.last_seen, file, indent=2)
+            print("[DEBUG] Successfully saved last seen timestamps")
+        except Exception as e:
+            print(f"[ERROR] Failed to save last seen timestamps: {e}")
 
     def load_last_seen(self):
-        """Load the last seen dictionary from a file."""
-        if os.path.exists("last_seen.json"):
-            with open("last_seen.json", "r") as file:
-                return json.load(file)
-        return {}
+        """Load the last seen dictionary from a file with error handling."""
+        try:
+            if os.path.exists("last_seen.json"):
+                with open("last_seen.json", "r") as file:
+                    data = json.load(file)
+                    # Convert all keys to lowercase for case-insensitive matching
+                    return {k.lower(): v for k, v in data.items()}
+            return {}
+        except Exception as e:
+            print(f"[ERROR] Failed to load last seen timestamps: {e}")
+            return {}
 
     def get_stock_price(self, symbol):
         """Fetch the current price of a stock."""
