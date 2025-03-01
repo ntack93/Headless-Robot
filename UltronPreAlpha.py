@@ -39,6 +39,7 @@ DEFAULT_WEATHER_API_KEY = api_keys.get("weather_api_key", "")
 DEFAULT_YOUTUBE_API_KEY = api_keys.get("youtube_api_key", "")
 DEFAULT_GOOGLE_CSE_KEY = api_keys.get("google_cse_api_key", "")  # Google Custom Search API Key
 DEFAULT_GOOGLE_CSE_CX = api_keys.get("google_cse_cx", "")   # Google Custom Search Engine ID (cx)
+DEFAULT_GOOGLE_CSE_PIC_CX = api_keys.get("google_cse_pic_cx", "85aed09b11ea947b1")  # Picture Search Engine ID
 DEFAULT_NEWS_API_KEY = api_keys.get("news_api_key", "")    # NewsAPI Key
 DEFAULT_GOOGLE_PLACES_API_KEY = api_keys.get("google_places_api_key", "")  # Google Places API Key
 DEFAULT_PEXELS_API_KEY = api_keys.get("pexels_api_key", "")  # Pexels API Key
@@ -68,7 +69,8 @@ class BBSBotApp:
         self.weather_api_key = tk.StringVar(value=DEFAULT_WEATHER_API_KEY)
         self.youtube_api_key = tk.StringVar(value=DEFAULT_YOUTUBE_API_KEY)
         self.google_cse_api_key = tk.StringVar(value=DEFAULT_GOOGLE_CSE_KEY)
-        self.google_cse_cx = tk.StringVar(value=DEFAULT_GOOGLE_CSE_CX)
+        self.google_cse_cx = tk.StringVar(value=DEFAULT_GOOGLE_CSE_CX)  # For search
+        self.google_cse_pic_cx = tk.StringVar(value=DEFAULT_GOOGLE_CSE_PIC_CX)  # For pictures
         self.news_api_key = tk.StringVar(value=DEFAULT_NEWS_API_KEY)
         self.google_places_api_key = tk.StringVar(value=DEFAULT_GOOGLE_PLACES_API_KEY)
         self.pexels_api_key = tk.StringVar(value=DEFAULT_PEXELS_API_KEY)  # Ensure Pexels API Key is loaded
@@ -411,11 +413,18 @@ class BBSBotApp:
         self.create_context_menu(google_cse_api_key_entry)
         row_index += 1
 
-        # ----- Google CSE ID (cx) -----
-        ttk.Label(settings_win, text="Google CSE ID (cx):").grid(row=row_index, column=0, padx=5, pady=5, sticky=tk.E)
+        # ----- Google CSE ID (search) -----
+        ttk.Label(settings_win, text="Google CSE ID (search):").grid(row=row_index, column=0, padx=5, pady=5, sticky=tk.E)
         google_cse_cx_entry = ttk.Entry(settings_win, textvariable=self.google_cse_cx, width=40)
         google_cse_cx_entry.grid(row=row_index, column=1, padx=5, pady=5)
         self.create_context_menu(google_cse_cx_entry)
+        row_index += 1
+
+        # ----- Google CSE ID (pictures) -----
+        ttk.Label(settings_win, text="Google CSE ID (pictures):").grid(row=row_index, column=0, padx=5, pady=5, sticky=tk.E)
+        google_cse_pic_cx_entry = ttk.Entry(settings_win, textvariable=self.google_cse_pic_cx, width=40)
+        google_cse_pic_cx_entry.grid(row=row_index, column=1, padx=5, pady=5)
+        self.create_context_menu(google_cse_pic_cx_entry)
         row_index += 1
 
         # ----- News API Key -----
@@ -524,6 +533,7 @@ class BBSBotApp:
             "youtube_api_key": self.youtube_api_key.get(),
             "google_cse_api_key": self.google_cse_api_key.get(),
             "google_cse_cx": self.google_cse_cx.get(),
+            "google_cse_pic_cx": self.google_cse_pic_cx.get(),
             "news_api_key": self.news_api_key.get(),
             "google_places_api_key": self.google_places_api_key.get(),
             "pexels_api_key": self.pexels_api_key.get(),
@@ -544,6 +554,7 @@ class BBSBotApp:
                 self.youtube_api_key.set(api_keys.get("youtube_api_key", ""))
                 self.google_cse_api_key.set(api_keys.get("google_cse_api_key", ""))
                 self.google_cse_cx.set(api_keys.get("google_cse_cx", ""))
+                self.google_cse_pic_cx.set(api_keys.get("google_cse_pic_cx", ""))
                 self.news_api_key.set(api_keys.get("news_api_key", ""))
                 self.google_places_api_key.set(api_keys.get("google_places_api_key", ""))
                 self.pexels_api_key.set(api_keys.get("pexels_api_key", ""))  # Ensure Pexels API Key is loaded
@@ -662,9 +673,10 @@ class BBSBotApp:
                 self.master.after(1000, self.send_teleconference_command)
 
     def send_teleconference_command(self):
-        """Send '/go tele' and press ENTER."""
+        """Send '/go Wordldlink', wait 0.5 seconds, and then send 'ENTER'."""
         if self.connected and self.writer:
-            asyncio.run_coroutine_threadsafe(self._send_message('/go tele\r\n'), self.loop)
+            asyncio.run_coroutine_threadsafe(self._send_message('/go Worldlink'), self.loop)
+            self.master.after(500, lambda: asyncio.run_coroutine_threadsafe(self._send_message('\r\n'), self.loop))
 
     async def disconnect_from_bbs(self):
         """Stop the background thread and close connections."""
@@ -3173,34 +3185,52 @@ class BBSBotApp:
             self.send_full_message(f"Error parsing command: {str(e)}")
 
     def get_pic_response(self, query):
-        """Fetch a random picture from Pexels based on the query."""
-        key = self.pexels_api_key.get()
-        if not key:
-            return "Pexels API key is missing."
-        elif not query:
-            return "Please specify a query."
+        """Fetch a picture or GIF URL based on the query format '!pic <img/gif> <search terms>'."""
+        if not query:
+            return "Usage: !pic <img/gif> <search terms>"
+
+        # Split the query into type and search terms
+        parts = query.split(maxsplit=1)
+        if len(parts) < 2:
+            return "Usage: !pic <img/gif> <search terms>"
+
+        pic_type, search_terms = parts[0].lower(), parts[1]
+
+        cse_key = self.google_cse_api_key.get()
+        cse_id = self.google_cse_pic_cx.get()  # Changed to use pic-specific CSE ID
+        if not cse_key or not cse_id:
+            return "Google CSE API key or engine ID is missing."
+
+        url = "https://www.googleapis.com/customsearch/v1"
+        params = {
+            "key": cse_key,
+            "cx": cse_id,
+            "q": search_terms,
+            "searchType": "image",
+            "num": 1
+        }
+
+        # Add filetype restriction based on type
+        if pic_type == "gif":
+            params["fileType"] = "gif"
+        elif pic_type == "img":
+            params["fileType"] = "jpg,png"
         else:
-            url = "https://api.pexels.com/v1/search"
-            headers = {
-                "Authorization": key
-            }
-            params = {
-                "query": query,
-                "per_page": 1,
-                "page": 1
-            }
-            try:
-                r = requests.get(url, headers=headers, params=params, timeout=10)
-                r.raise_for_status()  # Raise an HTTPError for bad responses
-                data = r.json()
-                photos = data.get("photos", [])
-                if not photos:
-                    return f"No pictures found for '{query}'."
-                else:
-                    photo_url = photos[0]["src"]["original"]
-                    return f"Here is a picture of {query}: {photo_url}"
-            except requests.exceptions.RequestException as e:
-                return f"Error fetching picture: {str(e)}"
+            return "Invalid type. Use 'img' for images or 'gif' for GIFs."
+
+        try:
+            r = requests.get(url, params=params)
+            data = r.json()
+            items = data.get("items", [])
+            if not items:
+                return f"No {pic_type}s found for '{search_terms}'."
+            
+            image_url = items[0]["link"]
+            shortened_url = self.shorten_url(image_url)
+            return f"{pic_type.upper()} result for '{search_terms}': {shortened_url}"
+
+        except requests.exceptions.RequestException as e:
+            return f"Error fetching {pic_type}: {str(e)}"
 
     def handle_blaz_command(self, call_letters):
         """Handle the !blaz command to provide radio station's live broadcast link."""
