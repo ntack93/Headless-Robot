@@ -12,13 +12,13 @@ BBS Chat Bot is a Python application that functions as a BBS Teleconference Bot 
 - **YouTube Search:** Use `!yt <query>` for YouTube searches.
 - **News Headlines:** Use `!news <topic>` to get news headlines via NewsAPI.
 - **Map Lookup:** Use `!map <place>` to retrieve place information from Google Places API.
-- **Picture Search:** Use `!pic <query>` to get a random picture from Pexels.
+- **Picture Search:** Use `!pic <img/gif> <query>` to get a picture or GIF from Google Custom Search.
 - **Stock Prices:** Use `!stocks <symbol>` for the current price of a stock.
 - **Cryptocurrency Prices:** Use `!crypto <symbol>` for cryptocurrency price data.
 - **Text-to-Speech:** Use `!polly <voice> <text>` to convert text to speech with AWS Polly.
 - **YouTube to MP3:** Use `!mp3yt <youtube link>` to download YouTube videos as MP3.
 - **GIF Search:** Use `!gif <query>` to fetch a popular GIF.
-- **Timer:** Use `!timer <value> <minutes or seconds>` to set a timer. 
+- **Timer:** Use `!timer <value> <minutes or seconds>` to set a timer.
 - **Private Messaging:** Use `!msg <username> <message>` to leave a message for another user.
 - **Conversation Persistence:** Save conversations using DynamoDB.
 - **Split View:** Create multiple bot instances in one interface. *(Still in Development)*
@@ -30,6 +30,80 @@ BBS Chat Bot is a Python application that functions as a BBS Teleconference Bot 
 - **NEW – !said Command:** In public chat, type `!said <username>` to display the three most recent public messages from that user or !said by itself for the last three messages sent to the chatroom in general.
 - **Email Sending:** Use `!mail "recipient@example.com" "Subject" "Body"` to send an email using Gmail.
 
+## Triggers and Commands
+
+### !search <keyword>
+Perform a Google Custom Search and return the response as a string.
+
+### !chat <query>
+Send a query to ChatGPT and return the response.
+
+### !weather <city or zip>
+Fetch current weather data for the specified city or zip code.
+
+### !yt <query>
+Perform a YouTube search for the given query.
+
+### !news <topic>
+Fetch top 2 news headlines based on the given topic.
+
+### !map <place>
+Fetch place information from Google Places API.
+
+### !pic <img/gif> <query>
+Fetch a picture or GIF URL based on the query format `!pic <img/gif> <search terms>` using Google Custom Search.
+
+### !stocks <symbol>
+Fetch the current price of a stock.
+
+### !crypto <symbol>
+Fetch the current price of a cryptocurrency.
+
+### !polly <voice> <text>
+Convert text to speech using AWS Polly and provide an S3 link to the MP3 file.
+
+### !mp3yt <youtube link>
+Download YouTube video as MP3, upload to S3, and provide the link.
+
+### !gif <query>
+Fetch a popular GIF based on the query.
+
+### !timer <value> <minutes or seconds>
+Set a timer for the specified value and unit.
+
+### !msg <username> <message>
+Leave a private message for another user.
+
+### !nospam
+Toggle No Spam Mode to prevent the bot from responding to public triggers.
+
+### !doc <topic>
+Generate a detailed document using ChatGPT based on the given topic.
+
+### !trump
+Fetch and display Donald Trump's latest post from Truth Social.
+
+### !said <username>
+Display the three most recent public messages from the specified user or the last three messages sent to the chatroom in general.
+
+### !mail "recipient@example.com" "Subject" "Body"
+Send an email using Gmail.
+
+### !blaz <call letters>
+Fetch and display information about a radio station based on its call letters.
+
+### !radio <query>
+Perform a radio search based on the given query.
+
+### !pod <show> <episode>
+Fetch and display information about a podcast episode.
+
+### !musk
+Fetch and display Elon Musk's latest post from Twitter.
+
+### !since <username>
+Fetch and display the last time the specified user was seen in the chatroom.
+
 ## Requirements
 
 - Python 3.x
@@ -38,13 +112,13 @@ BBS Chat Bot is a Python application that functions as a BBS Teleconference Bot 
 - AWS DynamoDB
 - Screen
 - systemd
-- Tkinter (usually included with Python)  
-- asyncio  
-- boto3 (for AWS DynamoDB integration)  
-- requests (for API requests)  
-- openai (for ChatGPT integration)  
-- pytube (for YouTube video downloads)  
-- pydub (for audio processing)  
+- Tkinter (usually included with Python)
+- asyncio
+- boto3 (for AWS DynamoDB integration)
+- requests (for API requests)
+- openai (for ChatGPT integration)
+- pytube (for YouTube video downloads)
+- pydub (for audio processing)
 - subprocess (for running external commands)
 - smtplib (for sending emails)
 
@@ -53,7 +127,7 @@ BBS Chat Bot is a Python application that functions as a BBS Teleconference Bot 
 1. **Clone the repository:**
 
    ```sh
-   git clone https://github.com/ntack93/BBSBOT.git  
+   git clone https://github.com/ntack93/BBSBOT.git
    cd BBSBOT
    ```
 
