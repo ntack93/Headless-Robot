@@ -9,6 +9,8 @@ import telnetlib3
 from colorama import init, Fore, Style
 import os
 import json
+import concurrent.futures
+
 
 # Initialize colorama for Linux
 init(strip=False)
@@ -556,22 +558,21 @@ class BBSBotCLI:
             self.logger.exception("Error in sync_send_full_message")
 
     def sync_send_private_message(self, username, message):
-        """Synchronous wrapper for sending private (whispered) messages with proper error handling."""
+        """Synchronous wrapper for sending private (whispered) messages"""
         if not message or not username:
             return
-            
+
         async def wrapped_send():
-            # Handle both string and list messages
             messages_to_send = message if isinstance(message, list) else [message]
-            
+
             for msg in messages_to_send:
                 chunks = self.bot.chunk_message(str(msg), 250)
                 for chunk in chunks:
                     try:
                         full_message = f"Whisper to {username} {chunk}"
                         await self.send_message(full_message + "\r\n")
+                        await asyncio.sleep(0.1)  # Reduced to 0.1 seconds
                         self.logger.info(f"Sent chunk to {username}: {chunk}")
-                        await asyncio.sleep(1.0)  # Add 1 second delay between chunks
                     except Exception as e:
                         self.logger.error(f"Error sending chunk to {username}: {e}")
                         raise
@@ -579,9 +580,9 @@ class BBSBotCLI:
         try:
             self.logger.info(f"Starting message send to {username}")
             future = asyncio.run_coroutine_threadsafe(wrapped_send(), self.loop)
-            
+
             try:
-                future.result(timeout=30.0)  # Increased timeout to 30 seconds
+                future.result(timeout=5.0)  # Reduced timeout to 5 seconds
                 self.logger.info(f"Successfully sent message to {username}")
             except concurrent.futures.TimeoutError:
                 self.logger.error(f"Timeout sending message to {username}")
@@ -589,7 +590,6 @@ class BBSBotCLI:
             except Exception as e:
                 self.logger.error(f"Error in message send: {e}")
                 print(f"{Fore.RED}Failed to send message: {e}{Style.RESET_ALL}")
-                
         except Exception as e:
             self.logger.error(f"Critical error in sync_send_private_message: {e}")
             print(f"{Fore.RED}Critical error sending message: {e}{Style.RESET_ALL}")
