@@ -675,7 +675,7 @@ class BBSBotApp:
     def send_teleconference_command(self):
         """Send '/go Wordldlink', wait 0.5 seconds, and then send 'ENTER'."""
         if self.connected and self.writer:
-            asyncio.run_coroutine_threadsafe(self._send_message('/go Worldlink'), self.loop)
+            asyncio.run_coroutine_threadsafe(self._send_message('/go tele'), self.loop)
             self.master.after(500, lambda: asyncio.run_coroutine_threadsafe(self._send_message('\r\n'), self.loop))
 
     async def disconnect_from_bbs(self):
@@ -1204,7 +1204,19 @@ class BBSBotApp:
         elif command == "!pic":
             response = self.get_pic_response(query)
         elif command == "!help":
-            response = self.get_help_response()
+            # Get all help chunks
+            help_chunks = self.get_help_response()
+            
+            # Send each chunk with a 1-second delay
+            def send_delayed_chunk(chunk_index):
+                if chunk_index < len(help_chunks):
+                    self.send_private_message(username, help_chunks[chunk_index])
+                    # Schedule next chunk after 1 second
+                    self.master.after(1000, lambda: send_delayed_chunk(chunk_index + 1))
+            
+            # Start sending chunks
+            send_delayed_chunk(0)
+            return
         elif command == "!stocks":
             response = self.get_stock_price(query)
         elif command == "!crypto":
@@ -1251,7 +1263,17 @@ class BBSBotApp:
             query = message.split("!pic", 1)[1].strip()
             response = self.get_pic_response(query)
         elif "!help" in message:
-            response = self.get_help_response()
+            help_chunks = self.get_help_response()
+            
+            def send_delayed_chunk(chunk_index):
+                if chunk_index < len(help_chunks):
+                    self.send_page_response(username, module_or_channel, help_chunks[chunk_index])
+                    # Schedule next chunk after 1 second
+                    self.master.after(1000, lambda: send_delayed_chunk(chunk_index + 1))
+            
+            # Start sending chunks
+            send_delayed_chunk(0)
+            return
         elif "!stocks" in message:
             symbol = message.split("!stocks", 1)[1].strip()
             response = self.get_stock_price(symbol)
@@ -1638,29 +1660,47 @@ class BBSBotApp:
                 return f"Error fetching place info: {str(e)}"
 
     def get_help_response(self):
-        """Return the help message as a string."""
-        help_text = (
-            "Available commands: Please use a ! immediately followed by one of the following keywords (no space): "
-            "weather <location>, yt <query>, search <query>, chat <message>, news <topic>, map <place>, pic <img/gif> <query>, "
-            "polly <voice> <text>, mp3yt <youtube link>, help, seen <username>, greeting, stocks <symbol>, "
-            "crypto <symbol>, timer <value> <minutes or seconds>, gif <query>, msg <username> <message>, doc <topic>, "
-            "pod <show> <episode>, trump, nospam, blaz <call letters>, radio <query>, musk, since <username>, said <username>, "
-            "mail \"recipient@example.com\" \"Subject\" \"Body\""
-        )
-
-        # Split the help text into chunks of up to 220 characters
+        """Return the help message as chunks that fit within BBS line limits."""
+        commands = [
+            "Use '!' followed by a keyword(no space)", "weather <location>", "yt <query>", "search <query>", 
+            "chat <message>", "news <topic>", "map <place>", 
+            "pic <img/gif> <query>", "polly <voice> <text>", 
+            "mp3yt <youtube_url>", "help", "seen <username>", "greeting",
+            "stocks <symbol>", "crypto <symbol>", 
+            "timer <value> <minutes/seconds>", "gif <query>", 
+            "msg <username> <message>", "doc <topic>", "pod <show> <episode>",
+            "trump", "nospam", "blaz <call_letters>", "radio <query>",
+            "musk", "since <username>", "said <username>",
+            "mail <recipient> <subject> <body>"
+        ]
+        
         chunks = []
-        current_chunk = ""
-        for line in help_text.split(", "):
-            if len(current_chunk) + len(line) + 2 > 220:
-                chunks.append(current_chunk)
-                current_chunk = line + ", "
+        current_chunk = "Available commands: "
+        char_limit = 180  # Reduced from 230 to ensure safer delivery
+        
+        for cmd in commands:
+            # Check if adding this command would exceed the limit
+            if len(current_chunk) + len(cmd) + 2 <= char_limit:
+                current_chunk += cmd + ", "
             else:
-                current_chunk += line + ", "
+                # Remove trailing comma and space before adding to chunks
+                chunks.append(current_chunk.rstrip(", "))
+                # Start new chunk with the command that wouldn't fit
+                current_chunk = cmd + ", "
+        
+        # Add the final chunk if there's anything left
         if current_chunk:
             chunks.append(current_chunk.rstrip(", "))
-
-        return chunks
+        
+        # Add chunk numbers for clarity
+        final_chunks = []
+        for i, chunk in enumerate(chunks, 1):
+            if len(chunks) > 1:
+                final_chunks.append(f"{chunk} ({i}/{len(chunks)})")
+            else:
+                final_chunks.append(chunk)
+        
+        return final_chunks
 
     def append_terminal_text(self, text, default_tag="normal"):
         """Append text to the terminal display with ANSI parsing."""
@@ -2045,7 +2085,7 @@ class BBSBotApp:
                         url = message.split("!mp3yt", 1)[1].strip()
                         self.handle_ytmp3_command(url)
                     elif message.startswith("!help"):
-                        self.send_full_message(self.get_help_response())
+                        self.handle_help_command()
                     elif message.startswith("!seen"):
                         target_username = message.split("!seen", 1)[1].strip()
                         self.send_full_message(self.get_seen_response(target_username))
@@ -2112,19 +2152,6 @@ class BBSBotApp:
 
     
 
-    def send_private_message(self, username, message):
-        """
-        Send a private message to the specified user with delays between chunks.
-        """
-        chunks = self.chunk_message(message, 200)  # Changed to 200 characters
-        for i, chunk in enumerate(chunks):
-            full_message = f"Whisper to {username} {chunk}"
-            asyncio.run_coroutine_threadsafe(self._send_message(full_message + "\r\n"), self.loop)
-            self.append_terminal_text(full_message + "\n", "normal")
-            if i < len(chunks) - 1:
-                time.sleep(0.5)  # Add 0.5 second delay between chunks
-
-    
 
     def get_who_response(self):
         """Return a list of users currently in the chatroom."""
@@ -2148,7 +2175,12 @@ class BBSBotApp:
     ########################################################################
     def handle_help_command(self):
         """Provide a list of available commands, adhering to character and chunk limits."""
-        help_message = self.get_help_response()
+        help_chunks = self.get_help_response()
+        
+        # Join the help chunks into a single string
+        help_message = "\n".join(help_chunks)
+        
+        # Send the help message
         self.send_full_message(help_message)
 
     ########################################################################
@@ -2997,7 +3029,20 @@ class BBSBotApp:
             query = message.split("!pic", 1)[1].strip()
             response = self.get_pic_response(query)
         elif "!help" in message:
-            response = self.get_help_response()
+            help_chunks = self.get_help_response()
+            
+            def send_delayed_chunk(chunk_index):
+                if chunk_index < len(help_chunks):
+                    if self.no_spam_mode.get():
+                        self.send_private_message(username, help_chunks[chunk_index])
+                    else:
+                        self.send_full_message(help_chunks[chunk_index])
+                    # Schedule next chunk after 1 second
+                    self.master.after(1000, lambda: send_delayed_chunk(chunk_index + 1))
+            
+            # Start sending chunks
+            send_delayed_chunk(0)
+            return
         elif "!stocks" in message:
             symbol = message.split("!stocks", 1)[1].strip()
             response = self.get_stock_price(symbol)
@@ -3212,8 +3257,11 @@ class BBSBotApp:
 
         pic_type, search_terms = parts[0].lower(), parts[1]
 
+        if pic_type not in ["img", "gif"]:
+            return "Invalid type. Use 'img' for images or 'gif' for GIFs."
+
         cse_key = self.google_cse_api_key.get()
-        cse_id = self.google_cse_pic_cx.get()  # Changed to use pic-specific CSE ID
+        cse_id = self.google_cse_pic_cx.get()
         if not cse_key or not cse_id:
             return "Google CSE API key or engine ID is missing."
 
@@ -3235,7 +3283,7 @@ class BBSBotApp:
             return "Invalid type. Use 'img' for images or 'gif' for GIFs."
 
         try:
-            r = requests.get(url, params=params)
+            r = requests.get(url, params=params, timeout=10)
             data = r.json()
             items = data.get("items", [])
             if not items:
@@ -3491,16 +3539,34 @@ class BBSBotApp:
             time.sleep(0.5)  # Add delay between chunks
 
     def send_private_message(self, username, message):
-        """
-        Send a private message to the specified user with delays between chunks.
-        """
-        chunks = self.chunk_message(message, 200)  # Changed to 200 characters
-        for i, chunk in enumerate(chunks):
-            full_message = f"Whisper to {username} {chunk}"
-            asyncio.run_coroutine_threadsafe(self._send_message(full_message + "\r\n"), self.loop)
-            self.append_terminal_text(full_message + "\n", "normal")
-            if i < len(chunks) - 1:
-                time.sleep(0.5)  # Add 0.5 second delay between chunks
+        """Send a private message with proper error handling and no recursion."""
+        if not message or not username:
+            return
+
+        try:
+            if isinstance(message, list):
+                message = "\n".join(message)
+                
+            chunks = self.chunk_message(message, 200)
+            for i, chunk in enumerate(chunks):
+                if self.connected and self.writer:
+                    full_message = f"Whisper to {username} {chunk}"
+                    # Use asyncio.run_coroutine_threadsafe with timeout
+                    future = asyncio.run_coroutine_threadsafe(
+                        self._send_message(full_message + "\r\n"), 
+                        self.loop
+                    )
+                    # Wait for the message to be sent with timeout
+                    future.result(timeout=3.0)
+                    
+                    # Log success but don't try to send again
+                    self.append_terminal_text(full_message + "\n", "normal")
+                    
+                    if i < len(chunks) - 1:
+                        time.sleep(0.5)
+        except Exception as e:
+            print(f"Error sending private message: {str(e)}")
+            # Don't try to send error message to avoid potential infinite loop
 
     def send_direct_message(self, username, message):
         """Send a direct public message."""
@@ -3567,37 +3633,44 @@ class BBSBotApp:
 
     def handle_since_command(self, username):
         """Handle the !since command to report when a user was last seen and last spoke."""
-        # Strip domain part if present
-        base_username = username.split('@')[0]
-        username_lower = base_username.lower()
+        try:
+            # Strip domain part if present
+            base_username = username.split('@')[0]
+            username_lower = base_username.lower()
 
-        # Create case-insensitive mappings with base usernames (no domains)
-        last_seen_lower = {k.split('@')[0].lower(): v for k, v in self.last_seen.items()}
-        last_spoke_lower = {k.split('@')[0].lower(): v for k, v in self.last_spoke.items()}
+            # Create case-insensitive mappings with base usernames (no domains)
+            last_seen_lower = {k.split('@')[0].lower(): v for k, v in self.last_seen.items()}
+            last_spoke_lower = {k.split('@')[0].lower(): v for k, v in self.last_spoke.items()}
 
-        if username_lower in last_seen_lower:
-            last_seen_time = last_seen_lower[username_lower]
-            last_seen_str = time.strftime('%Y-%m-%d %H:%M:%S GMT', time.gmtime(last_seen_time))
-            time_diff = int(time.time()) - last_seen_time
-            hours, remainder = divmod(time_diff, 3600)
-            minutes, seconds = divmod(remainder, 60)
-            last_seen_str += f" ({hours}h {minutes}m {seconds}s ago)"
-        else:
-            last_seen_str = "never"
+            # Get last seen time
+            if username_lower in last_seen_lower:
+                last_seen_time = last_seen_lower[username_lower]
+                last_seen_str = time.strftime('%Y-%m-%d %H:%M:%S GMT', time.gmtime(last_seen_time))
+                seen_diff = int(time.time()) - last_seen_time
+                seen_hours, seen_remainder = divmod(seen_diff, 3600)
+                seen_minutes, seen_seconds = divmod(seen_remainder, 60)
+                last_seen_str += f" ({seen_hours}h {seen_minutes}m {seen_seconds}s ago)"
+            else:
+                last_seen_str = "never"
 
-        if username_lower in last_spoke_lower:
-            last_spoke_time = last_spoke_lower[username_lower]
-            last_spoke_str = time.strftime('%Y-%m-%d %H:%M:%S GMT', time.gmtime(last_spoke_time))
-            time_diff = int(time.time()) - last_spoke_time
-            hours, remainder = divmod(time_diff, 3600)
-            minutes, seconds = divmod(remainder, 60)
-            last_spoke_str += f" ({hours}h {minutes}m {seconds}s ago)"
-        else:
-            last_spoke_str = "never"
+            # Get last spoke time
+            if username_lower in last_spoke_lower:
+                last_spoke_time = last_spoke_lower[username_lower]
+                last_spoke_str = time.strftime('%Y-%m-%d %H:%M:%S GMT', time.gmtime(last_spoke_time))
+                spoke_diff = int(time.time()) - last_spoke_time
+                spoke_hours, spoke_remainder = divmod(spoke_diff, 3600)
+                spoke_minutes, spoke_seconds = divmod(spoke_remainder, 60)
+                last_spoke_str += f" ({spoke_hours}h {spoke_minutes}m {spoke_seconds}s ago)"
+            else:
+                last_spoke_str = "never"
 
-        # Keep the response concise to avoid timeouts
-        response = f"{base_username} - Last seen: {last_seen_str} | Last spoke: {last_spoke_str}"
-        return response
+            # Create single response string
+            response = f"{base_username} - Last seen: {last_seen_str} | Last spoke: {last_spoke_str}"
+            return response
+
+        except Exception as e:
+            print(f"Error in handle_since_command: {str(e)}")
+            return f"Error processing !since command for {username}"
 
     def load_last_spoke(self):
         """Load the last spoke dictionary from a file."""
@@ -3643,3 +3716,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

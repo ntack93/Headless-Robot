@@ -303,6 +303,9 @@ class BBSBotCLI:
             await asyncio.gather(*self.tasks)
         except asyncio.CancelledError:
             pass
+        except Exception as e:
+            print(f"{Fore.RED}Error in main loop: {e}{Style.RESET_ALL}")
+            self.logger.exception("Error in main loop")
 
     async def handle_user_input(self):
         """Handle user input from command line"""
@@ -565,8 +568,10 @@ class BBSBotCLI:
                 await asyncio.sleep(0.1)
 
         try:
+            print(f"Sending private message to {username}: {message}")
             future = asyncio.run_coroutine_threadsafe(wrapped_send(), self.loop)
-            future.result(timeout=3)
+            future.result(timeout=10)  # Increase the timeout period to 10 seconds
+            print(f"Private message to {username} sent successfully")
         except Exception as e:
             print(f"{Fore.RED}Error in sync_send_private_message: {e}{Style.RESET_ALL}")
             self.logger.exception("Error in sync_send_private_message")
