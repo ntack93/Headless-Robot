@@ -556,25 +556,43 @@ class BBSBotCLI:
             self.logger.exception("Error in sync_send_full_message")
 
     def sync_send_private_message(self, username, message):
-        """Synchronous wrapper for sending private (whispered) messages"""
-        if not message:
+        """Synchronous wrapper for sending private (whispered) messages with proper error handling."""
+        if not message or not username:
             return
             
         async def wrapped_send():
-            chunks = self.bot.chunk_message(message, 250)
-            for chunk in chunks:
-                full_message = f"Whisper to {username} {chunk}"
-                await self.send_message(full_message + "\r\n")
-                await asyncio.sleep(0.1)
+            # Handle both string and list messages
+            messages_to_send = message if isinstance(message, list) else [message]
+            
+            for msg in messages_to_send:
+                chunks = self.bot.chunk_message(str(msg), 250)
+                for chunk in chunks:
+                    try:
+                        full_message = f"Whisper to {username} {chunk}"
+                        await self.send_message(full_message + "\r\n")
+                        self.logger.info(f"Sent chunk to {username}: {chunk}")
+                        await asyncio.sleep(1.0)  # Add 1 second delay between chunks
+                    except Exception as e:
+                        self.logger.error(f"Error sending chunk to {username}: {e}")
+                        raise
 
         try:
-            print(f"Sending private message to {username}: {message}")
+            self.logger.info(f"Starting message send to {username}")
             future = asyncio.run_coroutine_threadsafe(wrapped_send(), self.loop)
-            future.result(timeout=10)  # Increase the timeout period to 10 seconds
-            print(f"Private message to {username} sent successfully")
+            
+            try:
+                future.result(timeout=30.0)  # Increased timeout to 30 seconds
+                self.logger.info(f"Successfully sent message to {username}")
+            except concurrent.futures.TimeoutError:
+                self.logger.error(f"Timeout sending message to {username}")
+                print(f"{Fore.RED}Message send timeout - check connection{Style.RESET_ALL}")
+            except Exception as e:
+                self.logger.error(f"Error in message send: {e}")
+                print(f"{Fore.RED}Failed to send message: {e}{Style.RESET_ALL}")
+                
         except Exception as e:
-            print(f"{Fore.RED}Error in sync_send_private_message: {e}{Style.RESET_ALL}")
-            self.logger.exception("Error in sync_send_private_message")
+            self.logger.error(f"Critical error in sync_send_private_message: {e}")
+            print(f"{Fore.RED}Critical error sending message: {e}{Style.RESET_ALL}")
 
     def sync_send_page_response(self, username, module_or_channel, message):
         """Synchronous wrapper for sending page responses"""
