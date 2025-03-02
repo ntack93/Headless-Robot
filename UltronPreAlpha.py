@@ -1638,13 +1638,29 @@ class BBSBotApp:
                 return f"Error fetching place info: {str(e)}"
 
     def get_help_response(self):
-        """Return the help message as a string."""
-        return (
-            "Available commands: Please use a ! immediately followed by one of the following keywords (no space): "
-            "weather <location>, yt <query>, search <query>, chat <message>, news <topic>, map <place>, pic <query>, "
-            "polly <voice> <text>, mp3yt <youtube link>, help, seen <username>, greeting, stocks <symbol>, "
-            "crypto <symbol>, timer <value> <minutes or seconds>, gif <query>, msg <username> <message>, doc <query>, pod <show> <episode>, !trump, nospam.\n"
-        )
+    """Return the help message as a string."""
+    help_text = (
+        "Available commands: Please use a ! immediately followed by one of the following keywords (no space): "
+        "weather <location>, yt <query>, search <query>, chat <message>, news <topic>, map <place>, pic <img/gif> <query>, "
+        "polly <voice> <text>, mp3yt <youtube link>, help, seen <username>, greeting, stocks <symbol>, "
+        "crypto <symbol>, timer <value> <minutes or seconds>, gif <query>, msg <username> <message>, doc <topic>, "
+        "pod <show> <episode>, trump, nospam, blaz <call letters>, radio <query>, musk, since <username>, said <username>, "
+        "mail \"recipient@example.com\" \"Subject\" \"Body\""
+    )
+
+    # Split the help text into chunks of up to 220 characters
+    chunks = []
+    current_chunk = ""
+    for line in help_text.split(", "):
+        if len(current_chunk) + len(line) + 2 > 220:
+            chunks.append(current_chunk)
+            current_chunk = line + ", "
+        else:
+            current_chunk += line + ", "
+    if current_chunk:
+        chunks.append(current_chunk.rstrip(", "))
+
+    return chunks
 
     def append_terminal_text(self, text, default_tag="normal"):
         """Append text to the terminal display with ANSI parsing."""
