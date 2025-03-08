@@ -2880,10 +2880,12 @@ class BBSBotApp:
     def handle_doc_command(self, query, username, public=False):
         """Handle the !doc command to create a document using ChatGPT and provide an S3 link to the file."""
         if not query:
-            if public:
-                self.send_full_message(f"Please provide a query for the document, {username}.")
+            response_message = "Please provide a query for the document."
+            # Check no_spam setting when deciding how to respond
+            if public and not (self.no_spam_mode.get() or self.no_spam_perm):
+                self.send_full_message(response_message)
             else:
-                self.send_private_message(username, "Please provide a query for the document.")
+                self.send_private_message(username, response_message)
             return
 
         # Prepare the prompt for ChatGPT
@@ -2921,8 +2923,8 @@ class BBSBotApp:
         except Exception as e:
             response_message = f"Error creating document: {str(e)}"
 
-        # Send the download link to the user
-        if public:
+        # Check no_spam setting when deciding how to respond
+        if public and not (self.no_spam_mode.get() or self.no_spam_perm):
             self.send_full_message(response_message)
         else:
             self.send_private_message(username, response_message)
@@ -2990,7 +2992,11 @@ class BBSBotApp:
         if is_page and module_or_channel:
             self.send_page_response(sender, module_or_channel, response)
         else:
-            self.send_full_message(response)
+            # Check no_spam setting before deciding how to respond
+            if self.no_spam_mode.get() or self.no_spam_perm:
+                self.send_private_message(sender, response)
+            else:
+                self.send_full_message(response)
 
     def handle_public_trigger(self, username, message):
         """
@@ -3104,7 +3110,11 @@ class BBSBotApp:
             if is_page and module_or_channel:
                 self.send_page_response(sender, module_or_channel, response)
             else:
-                self.send_full_message(response)
+                # Check no_spam setting before deciding how to respond
+                if self.no_spam_mode.get() or self.no_spam_perm:
+                    self.send_private_message(sender, response)
+                else:
+                    self.send_full_message(response)
             return
 
         show = match.group(1)
@@ -3113,7 +3123,11 @@ class BBSBotApp:
         if is_page and module_or_channel:
             self.send_page_response(sender, module_or_channel, response)
         else:
-            self.send_full_message(response)
+            # Check no_spam setting before deciding how to respond
+            if self.no_spam_mode.get() or self.no_spam_perm:
+                self.send_private_message(sender, response)
+            else:
+                self.send_full_message(response)
 
     def get_podcast_response(self, show, episode):
         """Query the iTunes API for podcast episode details."""
@@ -3234,16 +3248,49 @@ class BBSBotApp:
         try:
             parts = shlex.split(command_text)
             if len(parts) < 4:
-                self.send_full_message("Usage: !mail \"recipient@example.com\" \"Subject\" \"Body\"")
+                response = "Usage: !mail \"recipient@example.com\" \"Subject\" \"Body\""
+                # Check no_spam setting before deciding how to respond
+                if self.no_spam_mode.get() or self.no_spam_perm:
+                    # Extract sender from command_text if available, otherwise use generic response
+                    sender_match = re.match(r'From (.+?): !mail', command_text)
+                    sender = sender_match.group(1) if sender_match else None
+                    if sender:
+                        self.send_private_message(sender, response)
+                    else:
+                        # Fallback if no sender is identified
+                        self.send_full_message(response)
+                else:
+                    self.send_full_message(response)
                 return
 
             recipient = parts[1]
             subject = parts[2]
             body = parts[3]
             response = self.send_email(recipient, subject, body)
-            self.send_full_message(response)
+            
+            # Check no_spam setting before deciding how to respond
+            if self.no_spam_mode.get() or self.no_spam_perm:
+                sender_match = re.match(r'From (.+?): !mail', command_text)
+                sender = sender_match.group(1) if sender_match else None
+                if sender:
+                    self.send_private_message(sender, response)
+                else:
+                    # Fallback if no sender is identified
+                    self.send_full_message(response)
+            else:
+                self.send_full_message(response)
         except ValueError as e:
-            self.send_full_message(f"Error parsing command: {str(e)}")
+            error_response = f"Error parsing command: {str(e)}"
+            # Same check for response
+            if self.no_spam_mode.get() or self.no_spam_perm:
+                sender_match = re.match(r'From (.+?): !mail', command_text)
+                sender = sender_match.group(1) if sender_match else None
+                if sender:
+                    self.send_private_message(sender, error_response)
+                else:
+                    self.send_full_message(error_response)
+            else:
+                self.send_full_message(error_response)
 
     def get_pic_response(self, query):
         """Fetch a picture or GIF URL based on the query format '!pic <img/gif> <search terms>'."""
