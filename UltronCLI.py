@@ -864,11 +864,16 @@ class BBSBotCLI:
 
     def initialize_email_checking(self):
         """Initialize the email checking functionality."""
-        # This should only be called AFTER self.bot is initialized
         try:
+            # Check if we already have a scheduled task
+            if hasattr(self, 'email_check_task') and self.email_check_task:
+                print("Email checking already scheduled - not duplicating")
+                return
+                
             print("Email checking will start in 10 seconds")
             # Schedule the first check
-            self.loop.call_later(10, self.check_emails)
+            self.email_check_task = self.loop.call_later(10, self.check_emails)
+            self.email_checking_started = True
         except Exception as e:
             print(f"Failed to initialize email checking: {e}")
 
@@ -877,10 +882,14 @@ class BBSBotCLI:
         try:
             print("Checking incoming emails...")
             
+            # Clear existing task reference to prevent duplicates
+            if hasattr(self, 'email_check_task'):
+                self.email_check_task = None
+            
             # Enhanced connection check - don't check emails during reconnection attempts
             if not self.bot.connected or hasattr(self, 'reconnect_attempts') and self.reconnect_attempts > 0:
                 print("Not connected to BBS or currently reconnecting, will check mail later")
-                self.loop.call_later(30, self.check_emails)
+                self.email_check_task = self.loop.call_later(30, self.check_emails)
                 return
                     
             credentials = self.bot.load_email_credentials()
@@ -889,7 +898,7 @@ class BBSBotCLI:
             
             if not email_address or not password:
                 print("Missing email credentials")
-                self.loop.call_later(30, self.check_emails)
+                self.email_check_task = self.loop.call_later(30, self.check_emails)
                 return
                     
             print(f"Connecting to email {email_address}")
@@ -910,7 +919,7 @@ class BBSBotCLI:
             if not self.bot.connected:
                 print("Connection lost during email check, aborting")
                 mail.logout()
-                self.loop.call_later(30, self.check_emails)
+                self.email_check_task = self.loop.call_later(30, self.check_emails)
                 return
             
             # Search for unread emails with subject 'BBS'
@@ -927,7 +936,7 @@ class BBSBotCLI:
                     if not self.bot.connected:
                         print("Connection lost while processing emails, marking remaining as unread")
                         mail.logout()
-                        self.loop.call_later(30, self.check_emails)
+                        self.email_check_task = self.loop.call_later(30, self.check_emails)
                         return
                         
                     status, data = mail.fetch(num, '(RFC822)')
@@ -965,7 +974,7 @@ class BBSBotCLI:
                     formatted_message = f"Incoming message via eMail: {body}"
                     print(f"Processing email: {formatted_message}")
                     
-                    # Check connection again before sending to BBS
+                    # Check connection again before sending to BBS - ALWAYS send regardless of no_spam mode
                     if self.bot.writer and self.bot.connected:
                         # Create task using the correct send_message method
                         self.loop.create_task(self.send_message(formatted_message))
@@ -977,7 +986,7 @@ class BBSBotCLI:
                     else:
                         print("Not sending to BBS due to disconnection - will retry later")
                         mail.logout()
-                        self.loop.call_later(30, self.check_emails)
+                        self.email_check_task = self.loop.call_later(30, self.check_emails)
                         return
                 
             else:
@@ -985,13 +994,15 @@ class BBSBotCLI:
             
             mail.logout()
             print("Email check complete")
+            
         except Exception as e:
             print(f"Error checking emails: {str(e)}")
+            
         finally:
             # Schedule next check only if not already in reconnection sequence
             if hasattr(self, 'reconnect_attempts') and self.reconnect_attempts == 0:
                 print("Scheduling next email check in 30 seconds")
-                self.loop.call_later(30, self.check_emails)
+                self.email_check_task = self.loop.call_later(30, self.check_emails)
             else:
                 print("In reconnection sequence - email checking will resume after reconnection")
 
