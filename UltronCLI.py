@@ -214,8 +214,15 @@ class BBSBotCLI:
         self.bot.port = self.port
         
         # Set up the event loop
-        self.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.loop)
+        try:
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
+            print("Event loop initialized successfully")
+        except Exception as e:
+            print(f"Failed to initialize event loop: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
         
         # Initialize state
         self.stop_event = asyncio.Event()
@@ -244,8 +251,8 @@ class BBSBotCLI:
         self.join_timer = None  # Add timer reference
         self.in_teleconference = False  # Add teleconference state
 
-        # Initialize email checking AFTER bot is created (last thing in init)
-        self.initialize_email_checking()
+        # Add this flag instead
+        self.email_checking_started = False
 
     def setup_logging(self):
         """Configure logging with platform-independent paths"""
@@ -415,6 +422,17 @@ class BBSBotCLI:
                     print(f"{Fore.YELLOW}MAIN channel detected - rejoining majorlink{Style.RESET_ALL}")
                     await self.send_message("join majorlink")
                     continue
+                # ADD THESE CHECKS for MajorLink channel detection
+                elif ("You are in the MajorLink channel" in data_str or 
+                      "Topic: General Chat" in data_str or
+                      "are here with you." in data_str):
+                    print(f"{Fore.GREEN}MajorLink channel detected!{Style.RESET_ALL}")
+                    
+                    # Start email checking if not already started
+                    if not self.email_checking_started:
+                        print(f"{Fore.GREEN}Starting email checking routine{Style.RESET_ALL}")
+                        self.initialize_email_checking()
+                        self.email_checking_started = True
 
                 # Print received data with proper color
                 print(f"{Fore.CYAN}{data_str}{Style.RESET_ALL}", end='')
@@ -537,6 +555,13 @@ class BBSBotCLI:
         if self.bot.connected and self.bot.writer:
             await self.send_message("join majorlink\r\n")
             self.join_timer = self.loop.call_later(60, lambda: asyncio.create_task(self.start_join_timer()))
+
+            # Reset email checking flag when starting a new login sequence
+            self.email_checking_started = False
+
+
+
+
 
     def stop_join_timer(self):
         """Stop the join timer if it's running"""
@@ -757,24 +782,40 @@ class BBSBotCLI:
 
     def run(self):
         """Main entry point with improved shutdown handling"""
-        def handle_sigint():
-            self.logger.info("Received SIGINT, initiating shutdown")
-            asyncio.create_task(self.shutdown(signal.SIGINT))
-            
-        # Set up signal handlers
-        for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
-            self.loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(self.shutdown(s)))
+        import platform
+        os_type = platform.system()
         
-        # Special handling for SIGINT (Ctrl+C)
-        self.loop.add_signal_handler(signal.SIGINT, handle_sigint)
+        # Only set up signal handlers on POSIX systems (non-Windows)
+        if os_type != "Windows":
+            def handle_sigint():
+                self.logger.info("Received SIGINT, initiating shutdown")
+                asyncio.create_task(self.shutdown(signal.SIGINT))
+                
+            # Add all signal handlers for Unix systems
+            for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+                try:
+                    self.loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(self.shutdown(s)))
+                except (NotImplementedError, AttributeError):
+                    self.logger.info(f"Signal handler for {sig} not supported on this platform")
+        
+        # Windows doesn't support signal handlers through asyncio
+        # We'll just use the KeyboardInterrupt exception handler instead
 
         try:
             self.loop.run_until_complete(self.main_loop())
         except KeyboardInterrupt:
             self.logger.info("KeyboardInterrupt received")
+            if os_type != "Windows":
+                asyncio.run_coroutine_threadsafe(self.shutdown(signal.SIGINT), self.loop)
+            else:
+                # On Windows, run shutdown directly
+                self.loop.run_until_complete(self.shutdown(signal.SIGINT))
         except Exception as e:
             self.logger.error(f"Error in main loop: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
+            # Rest of the cleanup code remains the same
             # Cancel any pending tasks
             pending = asyncio.all_tasks(self.loop)
             for task in pending:
@@ -835,11 +876,13 @@ class BBSBotCLI:
         """Check for incoming emails and schedule next check."""
         try:
             print("Checking incoming emails...")
-            if not self.bot.connected:
-                print("Not connected to BBS, will check mail later")
+            
+            # Enhanced connection check - don't check emails during reconnection attempts
+            if not self.bot.connected or hasattr(self, 'reconnect_attempts') and self.reconnect_attempts > 0:
+                print("Not connected to BBS or currently reconnecting, will check mail later")
                 self.loop.call_later(30, self.check_emails)
                 return
-                
+                    
             credentials = self.bot.load_email_credentials()
             email_address = credentials.get("sender_email")
             password = credentials.get("sender_password")
@@ -848,7 +891,7 @@ class BBSBotCLI:
                 print("Missing email credentials")
                 self.loop.call_later(30, self.check_emails)
                 return
-                
+                    
             print(f"Connecting to email {email_address}")
             
             # Manual IMAP implementation
@@ -863,6 +906,13 @@ class BBSBotCLI:
             mail.select('inbox')
             print("Selected inbox")
             
+            # One more connection check before proceeding with potentially resource-intensive operations
+            if not self.bot.connected:
+                print("Connection lost during email check, aborting")
+                mail.logout()
+                self.loop.call_later(30, self.check_emails)
+                return
+            
             # Search for unread emails with subject 'BBS'
             status, messages = mail.search(None, '(UNSEEN SUBJECT "BBS")')
             print(f"Email search status: {status}")
@@ -873,6 +923,13 @@ class BBSBotCLI:
                 
                 # Process each email
                 for num in message_nums:
+                    # Check connection state before processing each email
+                    if not self.bot.connected:
+                        print("Connection lost while processing emails, marking remaining as unread")
+                        mail.logout()
+                        self.loop.call_later(30, self.check_emails)
+                        return
+                        
                     status, data = mail.fetch(num, '(RFC822)')
                     if status != 'OK':
                         print(f"Error fetching message {num}: {status}")
@@ -904,21 +961,25 @@ class BBSBotCLI:
                     # Clean the body text
                     body = ' '.join(body.split())
                     
-                                        # Format message for display
+                    # Format message for display - CORRECT FORMAT HERE
                     formatted_message = f"Incoming message via eMail: {body}"
                     print(f"Processing email: {formatted_message}")
                     
-                    # IMPORTANT CHANGE: Always send email messages regardless of no_spam mode
-                    if self.bot.writer:
+                    # Check connection again before sending to BBS
+                    if self.bot.writer and self.bot.connected:
                         # Create task using the correct send_message method
                         self.loop.create_task(self.send_message(formatted_message))
                         print("Message sent to BBS chat")
+                        
+                        # Mark as read only if message was sent successfully
+                        mail.store(num, '+FLAGS', '\\Seen')
+                        print(f"Email marked as read")
                     else:
-                        print("Not sending to BBS due to missing writer")
-                    
-                    # Mark as read
-                    mail.store(num, '+FLAGS', '\\Seen')
-                    print(f"Email marked as read")
+                        print("Not sending to BBS due to disconnection - will retry later")
+                        mail.logout()
+                        self.loop.call_later(30, self.check_emails)
+                        return
+                
             else:
                 print("No new BBS emails")
             
@@ -927,9 +988,12 @@ class BBSBotCLI:
         except Exception as e:
             print(f"Error checking emails: {str(e)}")
         finally:
-            # Schedule next check
-            print("Scheduling next email check in 30 seconds")
-            self.loop.call_later(30, self.check_emails)
+            # Schedule next check only if not already in reconnection sequence
+            if hasattr(self, 'reconnect_attempts') and self.reconnect_attempts == 0:
+                print("Scheduling next email check in 30 seconds")
+                self.loop.call_later(30, self.check_emails)
+            else:
+                print("In reconnection sequence - email checking will resume after reconnection")
 
     def process_data_chunk(self, data):
         """Process incoming data chunks."""
@@ -966,6 +1030,8 @@ def main():
         print("\nShutdown requested via Ctrl+C")
     except Exception as e:
         print(f"Fatal error: {e}")
+        import traceback
+        traceback.print_exc()  # Print the full traceback for better debugging
     finally:
         print("Shutdown complete")
 
