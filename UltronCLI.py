@@ -24,7 +24,31 @@ class MockTk:
         
     def withdraw(self): pass
     def update(self): pass
-    def after(self, *args): pass
+    # filepath: c:\Users\Noah\OneDrive\Documents\Headless Robot\UltronCLI.py
+    def after(self, delay_ms, callback, *args):
+        """Schedule a function to be called after a delay."""
+        if not callable(callback):
+            return None
+        
+        def wrapper():
+            try:
+                callback(*args)
+            except Exception as e:
+                print(f"Error in scheduled callback: {e}")
+    
+        # Convert Tkinter milliseconds to asyncio seconds
+        delay_sec = delay_ms / 1000.0
+    
+        # Schedule using the global event loop if available
+        if hasattr(asyncio, 'get_event_loop'):
+            try:
+                loop = asyncio.get_event_loop()
+                return loop.call_later(delay_sec, wrapper)
+            except RuntimeError:
+                pass  # No event loop available
+            
+        return None  # Return None if scheduling failed
+
     def mainloop(self): pass
     def winfo_exists(self): return True
     def configure(self, **kwargs): pass
@@ -113,7 +137,6 @@ class MockScrollbar(MockWidget):
 class BBSBotCLI:
     def __init__(self, args):
         self.setup_logging()
-
         # Create comprehensive mock Tkinter environment
         mock_tkinter = type('MockTkinter', (), {
             'Tk': MockTk,
@@ -220,6 +243,9 @@ class BBSBotCLI:
 
         self.join_timer = None  # Add timer reference
         self.in_teleconference = False  # Add teleconference state
+
+        # Initialize email checking AFTER bot is created (last thing in init)
+        self.initialize_email_checking()
 
     def setup_logging(self):
         """Configure logging with platform-independent paths"""
@@ -793,6 +819,117 @@ class BBSBotCLI:
                 await asyncio.sleep(0.1)  # Small delay between chunks
         except Exception as e:
             self.logger.error(f"Error handling direct message: {e}")
+
+
+    def initialize_email_checking(self):
+        """Initialize the email checking functionality."""
+        # This should only be called AFTER self.bot is initialized
+        try:
+            print("Email checking will start in 10 seconds")
+            # Schedule the first check
+            self.loop.call_later(10, self.check_emails)
+        except Exception as e:
+            print(f"Failed to initialize email checking: {e}")
+
+    def check_emails(self):
+        """Check for incoming emails and schedule next check."""
+        try:
+            print("Checking incoming emails...")
+            if not self.bot.connected:
+                print("Not connected to BBS, will check mail later")
+                self.loop.call_later(30, self.check_emails)
+                return
+                
+            credentials = self.bot.load_email_credentials()
+            email_address = credentials.get("sender_email")
+            password = credentials.get("sender_password")
+            
+            if not email_address or not password:
+                print("Missing email credentials")
+                self.loop.call_later(30, self.check_emails)
+                return
+                
+            print(f"Connecting to email {email_address}")
+            
+            # Manual IMAP implementation
+            import imaplib
+            import email
+            from email.utils import parseaddr
+            
+            mail = imaplib.IMAP4_SSL('imap.gmail.com')
+            mail.login(email_address, password)
+            print("Email login successful!")
+            
+            mail.select('inbox')
+            print("Selected inbox")
+            
+            # Search for unread emails with subject 'BBS'
+            status, messages = mail.search(None, '(UNSEEN SUBJECT "BBS")')
+            print(f"Email search status: {status}")
+            
+            message_nums = messages[0].split()
+            if message_nums:
+                print(f"Found {len(message_nums)} new BBS emails")
+                
+                # Process each email
+                for num in message_nums:
+                    status, data = mail.fetch(num, '(RFC822)')
+                    if status != 'OK':
+                        print(f"Error fetching message {num}: {status}")
+                        continue
+                        
+                    email_msg = email.message_from_bytes(data[0][1])
+                    sender = parseaddr(email_msg['From'])[1]
+                    
+                    # Get body
+                    body = ""
+                    if email_msg.is_multipart():
+                        for part in email_msg.walk():
+                            if part.get_content_type() == "text/plain":
+                                try:
+                                    body = part.get_payload(decode=True).decode('utf-8')
+                                except UnicodeDecodeError:
+                                    body = part.get_payload(decode=True).decode('latin-1')
+                                break
+                    else:
+                        try:
+                            body = email_msg.get_payload(decode=True).decode('utf-8')
+                        except UnicodeDecodeError:
+                            body = email_msg.get_payload(decode=True).decode('latin-1')
+                    
+                    # Truncate to 230 characters if needed
+                    if len(body) > 230:
+                        body = body[:227] + "..."
+                        
+                    # Clean the body text
+                    body = ' '.join(body.split())
+                    
+                                        # Format message for display
+                    formatted_message = f"Incoming message via eMail: {body}"
+                    print(f"Processing email: {formatted_message}")
+                    
+                    # IMPORTANT CHANGE: Always send email messages regardless of no_spam mode
+                    if self.bot.writer:
+                        # Create task using the correct send_message method
+                        self.loop.create_task(self.send_message(formatted_message))
+                        print("Message sent to BBS chat")
+                    else:
+                        print("Not sending to BBS due to missing writer")
+                    
+                    # Mark as read
+                    mail.store(num, '+FLAGS', '\\Seen')
+                    print(f"Email marked as read")
+            else:
+                print("No new BBS emails")
+            
+            mail.logout()
+            print("Email check complete")
+        except Exception as e:
+            print(f"Error checking emails: {str(e)}")
+        finally:
+            # Schedule next check
+            print("Scheduling next email check in 30 seconds")
+            self.loop.call_later(30, self.check_emails)
 
     def process_data_chunk(self, data):
         """Process incoming data chunks."""

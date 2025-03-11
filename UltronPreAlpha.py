@@ -21,6 +21,9 @@ import smtplib
 from email.mime.text import MIMEText
 import shlex
 from bs4 import BeautifulSoup
+import imaplib
+import email
+from email.utils import parseaddr
 
 # Load API keys from api_keys.json
 def load_api_keys():
@@ -142,6 +145,12 @@ class BBSBotApp:
         self.openai_client = OpenAI(api_key=self.openai_api_key.get())
         self.in_teleconference = False  # Add this flag
         self.join_timer = None  # Add timer reference
+        
+        # Start checking for incoming emails
+        self.master.after(10000, self.check_incoming_mail)  # Start checking after 10 seconds
+
+
+
 
     def create_dynamodb_table(self):
         """Create DynamoDB table if it doesn't exist."""
@@ -3215,7 +3224,7 @@ class BBSBotApp:
                 return json.load(file)
         return {}
 
-    def send_email(self, recipient, subject, body):
+    def send_email(self, recipient, subject, body, sender_username=None):
         """Send an email using Gmail."""
         credentials = self.load_email_credentials()
         smtp_server = credentials.get("smtp_server", "smtp.gmail.com")
@@ -3227,6 +3236,10 @@ class BBSBotApp:
             return "Email credentials are missing."
 
         try:
+            # Add signature if sender_username is provided
+            if sender_username:
+                body += f"\n\n--\nSent from BBS user {sender_username}"
+                
             msg = MIMEText(body)
             msg["Subject"] = subject
             msg["From"] = sender_email
@@ -3243,21 +3256,102 @@ class BBSBotApp:
         except Exception as e:
             return f"Error sending email: {str(e)}"
 
+
+
+
+
+    def check_incoming_mail(self):
+        """
+        Periodically check for incoming emails with the subject 'BBS'.
+        If found, post their content to the BBS chatroom.
+        """
+        if not self.connected:
+            # Skip if not connected to BBS
+            self.master.after(60000, self.check_incoming_mail)  # Check again in 1 minute
+            return
+
+        credentials = self.load_email_credentials()
+        email_address = credentials.get("sender_email")
+        password = credentials.get("sender_password")
+
+        if not email_address or not password:
+            print("Email credentials are missing. Cannot check incoming mail.")
+            self.master.after(60000, self.check_incoming_mail)  # Check again in 1 minute
+            return
+
+        try:
+            # Connect to the IMAP server
+            mail = imaplib.IMAP4_SSL('imap.gmail.com')
+            mail.login(email_address, password)
+            mail.select('inbox')
+
+            # Search for unread emails with subject 'BBS'
+            status, messages = mail.search(None, '(UNSEEN SUBJECT "BBS")')
+
+            if status != 'OK':
+                print(f"Error searching for messages: {status}")
+                mail.logout()
+                self.master.after(60000, self.check_incoming_mail)  # Check again in 1 minute
+                return
+
+            # Process each matching email
+            for num in messages[0].split():
+                status, data = mail.fetch(num, '(RFC822)')
+                if status != 'OK':
+                    print(f"Error fetching message {num}: {status}")
+                    continue
+
+                email_msg = email.message_from_bytes(data[0][1])
+                sender = parseaddr(email_msg['From'])[1]
+
+                # Get the message body
+                body = ""
+                if email_msg.is_multipart():
+                    for part in email_msg.walk():
+                        content_type = part.get_content_type()
+                        if content_type == "text/plain":
+                            body = part.get_payload(decode=True).decode('utf-8')
+                            break
+                else:
+                    body = email_msg.get_payload(decode=True).decode('utf-8')
+
+                # Truncate to 230 characters if needed
+                if len(body) > 230:
+                    body = body[:227] + "..."
+
+                # Post to BBS chatroom
+                self.send_full_message(f"Email from {sender}: {body}")
+
+                # Mark the email as read
+                mail.store(num, '+FLAGS', '\\Seen')
+
+            mail.logout()
+        except Exception as e:
+            print(f"Error checking incoming mail: {e}")
+
+        # Schedule next check
+        self.master.after(30000, self.check_incoming_mail)  # Check every 30 seconds
+
+
+
+
+
+
     def handle_mail_command(self, command_text):
         """Handle the !mail command to send an email."""
         try:
+            # Extract the sender's username from command_text
+            sender_match = re.match(r'From (.+?): !mail', command_text)
+            sender_username = sender_match.group(1) if sender_match else "Unknown User"
+            
             parts = shlex.split(command_text)
             if len(parts) < 4:
                 response = "Usage: !mail \"recipient@example.com\" \"Subject\" \"Body\""
                 # Check no_spam setting before deciding how to respond
                 if self.no_spam_mode.get() or self.no_spam_perm:
-                    # Extract sender from command_text if available, otherwise use generic response
-                    sender_match = re.match(r'From (.+?): !mail', command_text)
-                    sender = sender_match.group(1) if sender_match else None
-                    if sender:
-                        self.send_private_message(sender, response)
+                    if sender_username != "Unknown User":
+                        self.send_private_message(sender_username, response)
                     else:
-                        # Fallback if no sender is identified
                         self.send_full_message(response)
                 else:
                     self.send_full_message(response)
@@ -3266,16 +3360,13 @@ class BBSBotApp:
             recipient = parts[1]
             subject = parts[2]
             body = parts[3]
-            response = self.send_email(recipient, subject, body)
+            response = self.send_email(recipient, subject, body, sender_username)
             
             # Check no_spam setting before deciding how to respond
             if self.no_spam_mode.get() or self.no_spam_perm:
-                sender_match = re.match(r'From (.+?): !mail', command_text)
-                sender = sender_match.group(1) if sender_match else None
-                if sender:
-                    self.send_private_message(sender, response)
+                if sender_username != "Unknown User":
+                    self.send_private_message(sender_username, response)
                 else:
-                    # Fallback if no sender is identified
                     self.send_full_message(response)
             else:
                 self.send_full_message(response)
@@ -3284,9 +3375,9 @@ class BBSBotApp:
             # Same check for response
             if self.no_spam_mode.get() or self.no_spam_perm:
                 sender_match = re.match(r'From (.+?): !mail', command_text)
-                sender = sender_match.group(1) if sender_match else None
-                if sender:
-                    self.send_private_message(sender, error_response)
+                sender_username = sender_match.group(1) if sender_match else None
+                if sender_username:
+                    self.send_private_message(sender_username, error_response)
                 else:
                     self.send_full_message(error_response)
             else:
@@ -3642,7 +3733,6 @@ class BBSBotApp:
         if command == 'nospamperm':
             return None  # Let process_message handle it
         
-        # ...existing code...
 
         command_handlers = {
             'weather': lambda: self.get_weather_response(args),
