@@ -2638,33 +2638,38 @@ class BBSBotApp:
             return {}
 
     def get_stock_price(self, symbol):
-        """Fetch the current price of a stock."""
-        api_key = self.alpha_vantage_api_key.get()
-        if not api_key:
-            return "Alpha Vantage API key is missing."
+        """Fetch the current price of a stock using Yahoo Finance."""
         if not symbol:
             return "Please provide a stock symbol."
-            
-        url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={symbol}&apikey={api_key}"
+        
         try:
-            response = requests.get(url)
-            data = response.json()
+            import yfinance as yf
             
-            # Check for error messages
-            if "Error Message" in data:
-                return f"Error: {data['Error Message']}"
-                
-            if "Global Quote" not in data or not data["Global Quote"]:
+            # Get stock data
+            ticker = yf.Ticker(symbol)
+            
+            # Force data download to get latest price
+            data = ticker.history(period="1d")
+            if data.empty:
                 return f"No data found for symbol {symbol}"
                 
-            quote = data["Global Quote"]
-            price = quote.get("05. price", "N/A")
-            change = quote.get("09. change", "N/A")
-            percent = quote.get("10. change percent", "N/A")
+            # Get the latest price information
+            price = data['Close'].iloc[-1]
             
-            return f"{symbol.upper()}: ${price} ({change} | {percent})"
+            # Get additional info for percentage change
+            prev_close = ticker.info.get('previousClose')
+            if prev_close:
+                change = price - prev_close
+                percent_change = (change / prev_close) * 100
+                
+                return f"{symbol.upper()}: ${price:.2f} ({change:.2f} | {percent_change:.2f}%)"
+            else:
+                return f"{symbol.upper()}: ${price:.2f}"
+                
+        except ImportError:
+            return "Yahoo Finance package not installed. Run 'pip install yfinance'."
         except Exception as e:
-            return f"Error fetching stock price: {str(e)}"
+            return f"Error fetching stock price for {symbol}: {str(e)}"
 
     def get_crypto_price(self, crypto):
         """Fetch the current price of a cryptocurrency."""
@@ -3574,32 +3579,51 @@ class BBSBotApp:
         ansi_escape_regex = re.compile(r'\x1b\[(.*?)m')
         clean_line = ansi_escape_regex.sub('', line)
 
-        # Handle whisper messages first
-        whisper_match = re.match(r'From (.+?) \(whispered\): (.+)', clean_line)
-        if whisper_match:
-            username = whisper_match.group(1)
-            content = whisper_match.group(2)
-            return 'whisper', username, content.strip()
-
-        # Define patterns with their corresponding message types
+        # Define patterns with their corresponding message types - now supporting both formats
         patterns = {
-            'page': (r'(.+?) is paging you from (.+?): (.+)', 
-                    lambda m: ('page', m.group(1), m.group(3))),
-            'whisper': (r'From (.+?) \(whispered\): (.+)',
-                       lambda m: ('whisper', m.group(1), m.group(2))),
-            'direct': (r'From (.+?) \(to you\): (.+)',
-                      lambda m: ('direct', m.group(1), m.group(2))),
-            'public': (r'From (.+?): (.+)',
-                      lambda m: ('public', m.group(1), m.group(2)))
+            # Existing patterns with "From" prefix
+            'page': [(r'(.+?) is paging you from (.+?): (.+)', 
+                    lambda m: ('page', m.group(1), m.group(3)))],
+                    
+            'whisper': [(r'From (.+?) \(whispered\): (.+)',
+                        lambda m: ('whisper', m.group(1), m.group(2))),
+                       # New whisper patterns with :[] format
+                       (r':\[(.+?)\] \(whispered\): (.+)',
+                        lambda m: ('whisper', m.group(1), m.group(2))),
+                       (r':\[(.+?@.+?)\] \(whispered\): (.+)',
+                        lambda m: ('whisper', m.group(1), m.group(2)))],
+                        
+            'direct': [(r'From (.+?) \(to you\): (.+)',
+                       lambda m: ('direct', m.group(1), m.group(2))),
+                      # New direct message patterns with :[] format
+                      (r':\[(.+?)\] \(to you\): (.+)',
+                       lambda m: ('direct', m.group(1), m.group(2))),
+                      (r':\[(.+?@.+?)\] \(to you\): (.+)',
+                       lambda m: ('direct', m.group(1), m.group(2)))],
+                       
+            'public': [(r'From (.+?): (.+)',
+                       lambda m: ('public', m.group(1), m.group(2))),
+                      # New public message patterns with :[] format
+                      (r':\[(.+?)\]: (.+)',
+                       lambda m: ('public', m.group(1), m.group(2))),
+                      (r':\[(.+?@.+?)\]: (.+)', 
+                       lambda m: ('public', m.group(1), m.group(2)))],
+                       
+            'third_party': [(r':\[(.+?)\] \(to (.+?)\): (.+)',
+                            lambda m: ('third_party', m.group(1), m.group(3))),
+                           (r':\[(.+?@.+?)\] \(to (.+?@.+?)\): (.+)',
+                            lambda m: ('third_party', m.group(1), m.group(3)))]
         }
 
-        for msg_type, (pattern, extract) in patterns.items():
-            if match := re.match(pattern, clean_line):
-                msg_type, username, content = extract(match)
-                # Ignore public messages containing 'ultron'
-                if msg_type == 'public' and 'ultron' in content.lower():
-                    return None, None, None
-                return msg_type, username, content
+        # Process each message type and its patterns
+        for msg_type, pattern_list in patterns.items():
+            for pattern, extract in pattern_list:
+                if match := re.match(pattern, clean_line):
+                    msg_type, username, content = extract(match)
+                    # Ignore public messages containing 'ultron' if from someone else
+                    if msg_type == 'public' and 'ultron' in content.lower() and not username.lower().startswith('ultron'):
+                        return None, None, None
+                    return msg_type, username, content.strip()
 
         return None, None, None
 
