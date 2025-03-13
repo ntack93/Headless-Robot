@@ -3422,8 +3422,6 @@ class BBSBotApp:
             params["fileType"] = "gif"
         elif pic_type == "img":
             params["fileType"] = "jpg,png"
-        else:
-            return "Invalid type. Use 'img' for images or 'gif' for GIFs."
 
         try:
             r = requests.get(url, params=params, timeout=10)
@@ -3432,12 +3430,38 @@ class BBSBotApp:
             if not items:
                 return f"No {pic_type}s found for '{search_terms}'."
             
-            image_url = items[0]["link"]
-            shortened_url = self.shorten_url(image_url)
-            return f"{pic_type.upper()} result for '{search_terms}': {shortened_url}"
+            # Get the image direct link - use image.link for more reliable direct access
+            item = items[0]
+            if "image" in item and "url" in item.get("image", {}):
+                # Use the image.url field which is more likely to be a direct image link
+                image_url = item["image"]["url"]
+            else:
+                # Fallback to the link field if image.url is not available
+                image_url = item["link"]
+            
+            # For images, ensure we have a direct image URL (ends with image extension)
+            if pic_type == "img" and not any(image_url.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif']):
+                # If not a direct image URL, try the thumbnailLink which is usually direct
+                if "image" in item and "thumbnailLink" in item.get("image", {}):
+                    image_url = item["image"]["thumbnailLink"]
+            
+            # Shorten URL with error handling
+            try:
+                shortened_url = self.shorten_url(image_url)
+                if shortened_url and "tinyurl.com" in shortened_url:
+                    final_url = shortened_url
+                else:
+                    # If shortening failed, use original URL
+                    final_url = image_url
+            except Exception:
+                final_url = image_url
+                
+            return f"{pic_type.upper()} result for '{search_terms}': {final_url}"
 
         except requests.exceptions.RequestException as e:
             return f"Error fetching {pic_type}: {str(e)}"
+        except Exception as e:
+            return f"Unexpected error processing {pic_type} request: {str(e)}"
 
     def handle_blaz_command(self, call_letters):
         """Handle the !blaz command to provide radio station's live broadcast link."""
@@ -3514,15 +3538,45 @@ class BBSBotApp:
             self.join_timer = None
 
     def shorten_url(self, url):
-        """Shorten a URL using TinyURL's API."""
+        """Shorten a URL using TinyURL's API with special handling for image URLs."""
         try:
-            tinyurl_api = f"http://tinyurl.com/api-create.php?url={url}"
-            response = requests.get(tinyurl_api)
+            # Special handling for image URLs - DON'T use TinyURL for these
+            if "jpg" in url.lower() or "jpeg" in url.lower() or "png" in url.lower() or "gif" in url.lower() or "image" in url.lower():
+                # For images, use a different URL shortener that's more reliable
+                # Using is.gd instead of TinyURL for images
+                isgd_api = f"https://is.gd/create.php?format=simple&url={requests.utils.quote(url, safe='')}"
+                response = requests.get(isgd_api, timeout=5)
+                
+                if response.status_code == 200:
+                    shortened = response.text.strip()
+                    if shortened.startswith("https://is.gd/") and len(shortened) < 30:
+                        print(f"Successfully shortened image URL with is.gd: {shortened}")
+                        return shortened
+                
+                # If is.gd fails, return original URL for images
+                print(f"Using original URL for image: {url}")
+                return url
+                
+            # Standard TinyURL for non-image URLs
+            encoded_url = requests.utils.quote(url, safe='')
+            tinyurl_api = f"http://tinyurl.com/api-create.php?url={encoded_url}"
+            response = requests.get(tinyurl_api, timeout=5)
+            
             if response.status_code == 200:
-                return response.text
-            return url  # Return original URL if shortening fails
-        except Exception:
-            return url  # Return original URL if any error occurs
+                shortened = response.text.strip()
+                
+                # Very strict validation
+                if shortened.startswith(("https://tinyurl.com/", "http://tinyurl.com/")) and \
+                   all(c.isalnum() or c in "-_./:~" for c in shortened):
+                    return shortened
+            
+            # Default fallback to original URL
+            print(f"Failed to create valid short URL, using original: {url}")
+            return url
+            
+        except Exception as e:
+            print(f"URL shortening error: {e}")
+            return url
 
     def get_gif_response(self, query):
         """Fetch a popular GIF based on the query and return the direct link to the GIF."""

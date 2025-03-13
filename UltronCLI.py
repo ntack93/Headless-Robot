@@ -395,10 +395,15 @@ class BBSBotCLI:
 
     async def read_bbs_output(self):
         """Read and display BBS output with improved message handling"""
+        # Add a new variable to track if we've already seen the channel banner
+        majorlink_banner_seen = False
+
         while not self.stop_event.is_set():
             try:
                 if not self.bot.connected:
                     if await self.attempt_reconnection():
+                        # Reset banner detection on reconnection
+                        majorlink_banner_seen = False
                         continue
                     else:
                         break
@@ -422,11 +427,13 @@ class BBSBotCLI:
                     print(f"{Fore.YELLOW}MAIN channel detected - rejoining majorlink{Style.RESET_ALL}")
                     await self.send_message("join majorlink")
                     continue
-                # ADD THESE CHECKS for MajorLink channel detection
-                elif ("You are in the MajorLink channel" in data_str or 
-                      "Topic: General Chat" in data_str or
-                      "are here with you." in data_str):
+                # Modified MajorLink channel detection to avoid repeated messages
+                elif (not majorlink_banner_seen and 
+                      ("You are in the MajorLink channel" in data_str or 
+                       "Topic: General Chat" in data_str or
+                       "are here with you." in data_str)):
                     print(f"{Fore.GREEN}MajorLink channel detected!{Style.RESET_ALL}")
+                    majorlink_banner_seen = True  # Set flag to avoid repeated messages
                     
                     # Start email checking if not already started
                     if not self.email_checking_started:
@@ -556,8 +563,7 @@ class BBSBotCLI:
             await self.send_message("join majorlink\r\n")
             self.join_timer = self.loop.call_later(60, lambda: asyncio.create_task(self.start_join_timer()))
 
-            # Reset email checking flag when starting a new login sequence
-            self.email_checking_started = False
+            
 
 
 
@@ -728,6 +734,10 @@ class BBSBotCLI:
             self.stop_join_timer()
             # Stop keep-alive before disconnecting
             self.stop_keep_alive()
+
+            # Reset email checking flag on true disconnection
+            self.email_checking_started = False
+
             try:
                 # Send a graceful quit message if needed
                 try:
