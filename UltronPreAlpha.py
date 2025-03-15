@@ -2553,19 +2553,25 @@ class BBSBotApp:
         self.send_full_message(response_message)
 
     def handle_ytmp3_command(self, url):
-        """Download YouTube video as MP3, upload to S3, and provide the link."""
         try:
-            # Use yt-dlp to download and convert the YouTube video to MP3
-            result = subprocess.run(
-                ["yt-dlp", "-x", "--audio-format", "mp3", url, "-o", "/tmp/%(id)s.%(ext)s"],
-                capture_output=True,
-                text=True
-            )
+            # Enhanced yt-dlp command with bypassing options
+            result = subprocess.run([
+                "yt-dlp", 
+                "-x", 
+                "--audio-format", "mp3",
+                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "--add-header", "Accept-Language:en-US,en;q=0.9",
+                "--geo-bypass",
+                "--no-check-certificate",
+                url, 
+                "-o", "/tmp/%(id)s.%(ext)s"
+            ], capture_output=True, text=True)
+                
             if result.returncode != 0:
                 raise Exception(result.stderr)
 
             # Extract the video ID from the URL
-            video_id = url.split("v=")[1].split("&")[0]
+            video_id = url.split("v=")[1].split("&")[0] if "v=" in url else url.split("/")[-1]
             mp3_filename = f"/tmp/{video_id}.mp3"
 
             s3_client = boto3.client('s3', region_name='us-east-1')
@@ -3845,6 +3851,10 @@ class BBSBotApp:
 
         handler = command_handlers.get(command)
         return handler() if handler else None
+
+        
+
+
 
     def handle_since_command(self, username):
         """Handle the !since command to report when a user was last seen and last spoke."""
