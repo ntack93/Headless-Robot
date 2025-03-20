@@ -752,6 +752,18 @@ class BBSBotApp:
             ansi_escape_regex = re.compile(r'\x1b\[(.*?)m')
             clean_line = ansi_escape_regex.sub('', line)
 
+            # Explicitly check for nospamperm command via whisper
+            whisper_nospamperm_match = re.match(r'From (.+?) \(whispered\): !nospamperm', clean_line) or \
+                                       re.match(r':\[(.+?)\] \(whispered\): !nospamperm', clean_line)
+            if whisper_nospamperm_match:
+                username = whisper_nospamperm_match.group(1)
+                print(f"Detected !nospamperm command from {username}")
+                self.no_spam_perm = not self.no_spam_perm
+                state = "permanently enabled" if self.no_spam_perm else "disabled"
+                self.send_private_message(username, f"No Spam Mode has been {state}.")
+                self.save_no_spam_state()
+                continue
+
             # Update last seen and last spoke timestamps for any user activity
             public_message_match = re.match(r'From (.+?): (.+)', clean_line)
             whisper_match = re.match(r'From (.+?) \(whispered\): (.+)', clean_line)
@@ -1040,13 +1052,16 @@ class BBSBotApp:
     def handle_private_trigger(self, username, message):
         """Handle private message triggers and respond privately."""
         message = message.strip()
+        print(f"Handling private trigger from {username}: {message}")
         
         # Handle nospamperm command
         if message == "!nospamperm":
+            print(f"Processing !nospamperm from {username}")
             self.no_spam_perm = not self.no_spam_perm
             state = "permanently enabled" if self.no_spam_perm else "disabled"
             self.send_private_message(username, f"No Spam Mode has been {state}.")
             self.save_no_spam_state()
+            print(f"No Spam Mode is now {state}")
             return
 
         # Handle nospam command
@@ -2891,11 +2906,16 @@ class BBSBotApp:
         return {'nospam': True, 'nospam_perm': False}  # Default values
 
     def save_no_spam_state(self):
-        with open("nospam_state.json", "w") as file:
-            json.dump({
-                "nospam": self.no_spam_mode.get(),
-                "nospam_perm": self.no_spam_perm
-            }, file, indent=4)
+        """Save the no_spam mode states to a file."""
+        try:
+            with open("nospam_state.json", "w") as file:
+                json.dump({
+                    "nospam": self.no_spam_mode.get(),
+                    "nospam_perm": self.no_spam_perm
+                }, file, indent=4)
+            print(f"Saved no_spam state: mode={self.no_spam_mode.get()}, perm={self.no_spam_perm}")
+        except Exception as e:
+            print(f"Error saving no_spam state: {e}")
 
     def handle_doc_command(self, query, username, public=False):
         """Handle the !doc command to create a document using ChatGPT and provide an S3 link to the file."""
