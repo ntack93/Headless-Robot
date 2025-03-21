@@ -208,7 +208,7 @@ class BBSBotCLI:
         self.command_processor = getattr(self.bot, 'command_processor', None)
         
         # Override connection settings with defaults
-        self.host = args.host or "bbs.wreckhall.net"  # Set default host
+        self.host = args.host or "bbs.uorealms.com"  # Set default host
         self.port = args.port or 23  # Set default port
         self.bot.host = self.host
         self.bot.port = self.port
@@ -1033,7 +1033,7 @@ class BBSBotCLI:
 
 def main():
     parser = argparse.ArgumentParser(description='BBS Chatbot CLI')
-    parser.add_argument('--host', help='BBS host address', default="bbs.wreckhall.net")
+    parser.add_argument('--host', help='BBS host address', default="bbs.uorealms.com")
     parser.add_argument('--port', type=int, help='BBS port number', default=23)
     parser.add_argument('--config', help='Path to config file')
     parser.add_argument('--no-gui', action='store_true', help='Run without GUI dependencies')
