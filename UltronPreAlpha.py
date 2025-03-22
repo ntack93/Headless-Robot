@@ -139,7 +139,7 @@ class BBSBotApp:
         self.previous_line = ""  # Store the previous line to detect multi-line triggers
         self.user_list_buffer = []  # Buffer to accumulate user list lines
         self.timers = {}  # Dictionary to store active timers
-        self.auto_greeting_enabled = False  # Default auto-greeting to off
+        self.auto_greeting_enabled = self.load_greeting_state()
         self.pending_messages_table_name = 'PendingMessages'
         self.create_pending_messages_table()
         self.openai_client = OpenAI(api_key=self.openai_api_key.get())
@@ -752,6 +752,23 @@ class BBSBotApp:
             ansi_escape_regex = re.compile(r'\x1b\[(.*?)m')
             clean_line = ansi_escape_regex.sub('', line)
 
+            # ENHANCED USER JOIN DETECTION - Add more detailed debugging
+            join_patterns = [
+                r'(.+?) just joined this channel!',
+                r'(.+?)@(.+?) just joined this channel!',
+                r'-> (.+?) enters\.',
+                r'-> (.+?)@(.+?) enters\.'
+            ]
+        
+            for pattern in join_patterns:
+                join_match = re.search(pattern, clean_line)
+                if join_match:
+                    username = join_match.group(1)
+                    print(f"[DEBUG] JOIN DETECTED: '{clean_line}' matched pattern '{pattern}'")
+                    print(f"[DEBUG] Extracted username: {username}")
+                    self.handle_user_greeting(username)
+                    break
+
             # Explicitly check for nospamperm command via whisper
             whisper_nospamperm_match = re.match(r'From (.+?) \(whispered\): !nospamperm', clean_line) or \
                                        re.match(r':\[(.+?)\] \(whispered\): !nospamperm', clean_line)
@@ -1009,6 +1026,16 @@ class BBSBotApp:
                 return
             if message.startswith("!"):
                 self.handle_public_trigger(username, message)
+
+
+            # Skip processing our own auto-greeting status messages
+            if "AUTO-GREETING-STATUS:" in message:
+                return
+                 
+            # Ignore messages from Ultron itself
+            if username.lower() == "ultron":
+                return
+
 
         # Check for user-specific triggers
         if self.previous_line == ":***" and clean_line.startswith("->"):
@@ -2204,8 +2231,19 @@ class BBSBotApp:
         # Join the help chunks into a single string
         help_message = "\n".join(help_chunks)
         
-        # Send the help message
-        self.send_full_message(help_message)
+        # Check no_spam mode before deciding how to respond
+        if self.no_spam_mode.get() or self.no_spam_perm:
+            # Find the sender - check previous line for username pattern
+            sender_match = re.match(r'From (.+?): !help', self.previous_line)
+            if sender_match:
+                sender = sender_match.group(1)
+                self.send_private_message(sender, help_message)
+            else:
+                # Fallback if we can't determine sender - still respect no_spam
+                self.send_private_message("User", help_message)
+        else:
+            # Send public message if no_spam is off
+            self.send_full_message(help_message)
 
     ########################################################################
     #                           Weather
@@ -2439,15 +2477,31 @@ class BBSBotApp:
         """
         if not self.auto_greeting_enabled:
             return
-
-        self.send_enter_keystroke()  # Send ENTER keystroke to get the list of users
-        time.sleep(1)  # Wait for the response to be processed
-        current_members = self.chat_members.copy()
-        new_member_username = username.split('@')[0]  # Remove the @<bbsaddress> part
-        if new_member_username not in current_members:
-            greeting_message = f"{new_member_username} just came into the chatroom, give them a casual greeting directed at them."
-            response = self.get_chatgpt_response(greeting_message, direct=True, username=new_member_username)
-            self.send_direct_message(new_member_username, response)
+            
+        # Extract just the username part (no domain)
+        new_member_username = username.split('@')[0].strip()
+        
+        print(f"[DEBUG] Detected new user: {new_member_username}")
+        print(f"[DEBUG] Auto-greeting is enabled: {self.auto_greeting_enabled}")
+        
+        # Don't check against current_members - just send the greeting
+        # This ensures we always greet regardless of membership status
+        greeting_message = f"{new_member_username} just came into the chatroom, give them a casual greeting directed at them."
+        
+        # Generate response with ChatGPT
+        response = self.get_chatgpt_response(greeting_message, direct=True, username=new_member_username)
+        
+        # Send a direct response to the user
+        print(f"[DEBUG] Sending greeting to {new_member_username}: {response}")
+        self.send_direct_message(new_member_username, response)
+        
+        # Add to chat members if not already there
+        self.chat_members.add(new_member_username)
+        self.save_chat_members()
+        
+        # Update last seen timestamp
+        self.last_seen[new_member_username.lower()] = int(time.time())
+        self.save_last_seen()
 
     def handle_pic_command(self, query):
         """Fetch a random picture from Pexels based on the query."""
@@ -2610,10 +2664,32 @@ class BBSBotApp:
 
     def handle_greeting_command(self):
         """Toggle the auto-greeting feature on and off."""
+        # Toggle the state
         self.auto_greeting_enabled = not self.auto_greeting_enabled
         state = "enabled" if self.auto_greeting_enabled else "disabled"
-        response = f"Auto-greeting has been {state}."
-        self.send_full_message(response)
+        
+        # Add a special prefix to the response so we can filter it in message processing
+        response = f"AUTO-GREETING-STATUS: Auto-greeting has been {state}."
+        
+        # Send the response using normal channel
+        if self.no_spam_mode.get() or self.no_spam_perm:
+            # Find the sender from the previous line if possible
+            sender_match = re.match(r'From (.+?): !greeting', self.previous_line)
+            if sender_match:
+                sender = sender_match.group(1)
+                self.send_private_message(sender, response)
+            else:
+                self.send_full_message(response)
+        else:
+            self.send_full_message(response)
+        
+        # Store the state in a persistent file to remember it between sessions
+        try:
+            with open("greeting_state.json", "w") as file:
+                json.dump({"enabled": self.auto_greeting_enabled}, file)
+            print(f"[DEBUG] Saved auto-greeting state: {self.auto_greeting_enabled}")
+        except Exception as e:
+            print(f"[ERROR] Failed to save auto-greeting state: {e}")
 
     def handle_seen_command(self, username):
         """Handle the !seen command to report the last seen timestamp of a user."""
@@ -3928,6 +4004,18 @@ class BBSBotApp:
         """Save the last spoke dictionary to a file."""
         with open("last_spoke.json", "w") as file:
             json.dump(self.last_spoke, file)
+
+    def load_greeting_state(self):
+        """Load auto-greeting state from file."""
+        try:
+            if os.path.exists("greeting_state.json"):
+                with open("greeting_state.json", "r") as file:
+                    data = json.load(file)
+                    return data.get("enabled", False)
+            return False  # Default to off
+        except Exception as e:
+            print(f"[ERROR] Failed to load auto-greeting state: {e}")
+            return False
 
 def main():
     app = None  # Ensure app is defined
