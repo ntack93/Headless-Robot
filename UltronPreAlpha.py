@@ -2228,22 +2228,22 @@ class BBSBotApp:
         """Provide a list of available commands, adhering to character and chunk limits."""
         help_chunks = self.get_help_response()
         
-        # Join the help chunks into a single string
-        help_message = "\n".join(help_chunks)
-        
-        # Check no_spam mode before deciding how to respond
+        # Send each chunk separately without using delayed scheduling
         if self.no_spam_mode.get() or self.no_spam_perm:
             # Find the sender - check previous line for username pattern
             sender_match = re.match(r'From (.+?): !help', self.previous_line)
             if sender_match:
                 sender = sender_match.group(1)
-                self.send_private_message(sender, help_message)
+                for chunk in help_chunks:
+                    self.send_private_message(sender, chunk)
             else:
-                # Fallback if we can't determine sender - still respect no_spam
-                self.send_private_message("User", help_message)
+                # Can't determine sender, send publicly anyway
+                for chunk in help_chunks:
+                    self.send_full_message(chunk)
         else:
-            # Send public message if no_spam is off
-            self.send_full_message(help_message)
+            # Send publicly if no_spam is off
+            for chunk in help_chunks:
+                self.send_full_message(chunk)
 
     ########################################################################
     #                           Weather
@@ -2490,6 +2490,9 @@ class BBSBotApp:
         
         # Generate response with ChatGPT
         response = self.get_chatgpt_response(greeting_message, direct=True, username=new_member_username)
+        
+        # Append help message to the AI-generated greeting
+        response += " Use !help to see what I can do!"
         
         # Send a direct response to the user
         print(f"[DEBUG] Sending greeting to {new_member_username}: {response}")
@@ -3119,6 +3122,9 @@ class BBSBotApp:
         Handle public message triggers and respond accordingly.
         If !nospam is enabled, respond via whisper instead of public message.
         """
+        
+        
+        
         # Special handling for !nospam command when nospamperm is enabled
         if "!nospam" in message:
             if self.no_spam_perm:
@@ -3150,20 +3156,14 @@ class BBSBotApp:
         elif "!pic" in message:
             query = message.split("!pic", 1)[1].strip()
             response = self.get_pic_response(query)
-        elif "!help" in message:
+        elif "!help" in message and message.strip() == "!help":
             help_chunks = self.get_help_response()
-            
-            def send_delayed_chunk(chunk_index):
-                if chunk_index < len(help_chunks):
-                    if self.no_spam_mode.get():
-                        self.send_private_message(username, help_chunks[chunk_index])
-                    else:
-                        self.send_full_message(help_chunks[chunk_index])
-                    # Schedule next chunk after 1 second
-                    self.master.after(1000, lambda: send_delayed_chunk(chunk_index + 1))
-            
-            # Start sending chunks
-            send_delayed_chunk(0)
+            # Special handling for help chunks
+            for chunk in help_chunks:
+                if self.no_spam_mode.get():
+                    self.send_private_message(username, chunk)
+                else:
+                    self.send_full_message(chunk)
             return
         elif "!stocks" in message:
             symbol = message.split("!stocks", 1)[1].strip()

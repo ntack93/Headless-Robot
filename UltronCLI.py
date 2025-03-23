@@ -595,21 +595,117 @@ class BBSBotCLI:
             print(f"{Fore.RED}Error loading password: {e}{Style.RESET_ALL}")
         return ""
 
+    async def send_full_message(self, message):
+        """Send a full message to the BBS with improved handling for special characters"""
+        if not message or not self.bot.connected:
+            return
+
+        try:
+            # Clean message of problematic characters that might trigger BBS commands
+            message = message.replace('?', '').replace('=', '')
+            
+            # Better detection for Trump posts
+            is_trump_post = (
+                "DJT Posted on:" in message or 
+                "Donald J. Trump" in message or 
+                "DJT" in message or 
+                message.startswith("Latest Post:") or
+                "Posted on:" in message
+            )
+            
+            # Use smaller chunk size to prevent truncation
+            max_chunk_size = 240  # Further reduced to ensure no truncation
+            
+            # Split the message with overlap to prevent word loss
+            words = message.split()
+            chunks = []
+            current_chunk = []
+            current_length = 0
+            
+            for word in words:
+                # If adding this word would exceed the max length, create a new chunk
+                if current_length + len(word) + 1 > max_chunk_size:
+                    chunks.append(' '.join(current_chunk))
+                    
+                    # Add the last two words to the next chunk to create overlap
+                    if len(current_chunk) >= 2:
+                        current_chunk = current_chunk[-2:]
+                        current_length = sum(len(w) for w in current_chunk) + len(current_chunk) - 1
+                    else:
+                        current_chunk = []
+                        current_length = 0
+                    
+                    # Add the current word
+                    current_chunk.append(word)
+                    current_length += len(word) + 1
+                else:
+                    current_chunk.append(word)
+                    current_length += len(word) + 1
+            
+            # Add the last chunk if it's not empty
+            if current_chunk:
+                chunks.append(' '.join(current_chunk))
+            
+            # Send each chunk with appropriate delay
+            for chunk in chunks:
+                if chunk.strip():  # Only send non-empty chunks
+                    full_message = f"{chunk}\r\n"
+                    self.bot.writer.write(full_message)
+                    await self.bot.writer.drain()
+                    print(f"{Fore.YELLOW}-> {chunk}{Style.RESET_ALL}")
+                    
+                    # Use slightly longer delay between chunks
+                    await asyncio.sleep(1.0)  # Increased to 1.0 second
+        except Exception as e:
+            print(f"{Fore.RED}Error sending message: {e}{Style.RESET_ALL}")
+
     def sync_send_full_message(self, message):
         """Synchronous wrapper for send_full_message that the bot can call"""
         if not message:
             return
             
         async def wrapped_send():
-            # Convert both direct message sends and full message sends
-            if hasattr(message, '__await__'):  # If it's already a coroutine
+            # Handle both string and list messages
+            if isinstance(message, list):
+                # If message is a list, send each item separately
+                for item in message:
+                    await self.send_full_message(item)
+            elif hasattr(message, '__await__'):  # If it's already a coroutine
                 await message
             else:
                 await self.send_full_message(message)
 
         try:
+            # Check if this is likely a Trump post or other long content
+            is_long_message = (
+                isinstance(message, str) and (
+                    "DJT Posted on:" in message or 
+                    "Donald J. Trump" in message or 
+                    "DJT" in message or 
+                    message.startswith("Latest Post:") or
+                    "Posted on:" in message or
+                    len(message) > 500  # General length check
+                )
+            )
+            
+            # Use a longer timeout for Trump posts
+            timeout = 15 if is_long_message else 5
+            
+            # Start the task without waiting for it to complete
             future = asyncio.run_coroutine_threadsafe(wrapped_send(), self.loop)
-            future.result(timeout=3)
+            
+            try:
+                # Wait with appropriate timeout
+                future.result(timeout=timeout)
+            except concurrent.futures.TimeoutError:
+                # For Trump posts, this is expected and not an error
+                if is_long_message:
+                    self.logger.info("Long message processing continues in background")
+                    print(f"{Fore.YELLOW}Long message continues sending in background{Style.RESET_ALL}")
+                else:
+                    # For other messages, log as an error
+                    self.logger.warning("Message send timed out, but may complete in background")
+                    print(f"{Fore.YELLOW}Message send timeout - continuing in background{Style.RESET_ALL}")
         except Exception as e:
             print(f"{Fore.RED}Error in sync_send_full_message: {e}{Style.RESET_ALL}")
             self.logger.exception("Error in sync_send_full_message")
@@ -688,44 +784,6 @@ class BBSBotCLI:
         except Exception as e:
             print(f"{Fore.RED}Error in sync_send_direct_message: {e}{Style.RESET_ALL}")
             self.logger.exception("Error in sync_send_direct_message")
-
-    async def send_full_message(self, message):
-        """Send a full message to the BBS"""
-        if not message or not self.bot.connected:
-            return
-
-        try:
-            # Split message into chunks of maximum 250 characters
-            chunks = []
-            current_chunk = []
-            current_length = 0
-            
-            # Split by words first
-            words = message.split()
-            for word in words:
-                # If this word would make the chunk too long, send current chunk
-                if current_length + len(word) + 1 > 250:
-                    chunks.append(' '.join(current_chunk))
-                    current_chunk = [word]
-                    current_length = len(word) + 1
-                else:
-                    current_chunk.append(word)
-                    current_length += len(word) + 1
-            
-            # Add the last chunk if there is one
-            if current_chunk:
-                chunks.append(' '.join(current_chunk))
-            
-            # Send each chunk with minimal delay
-            for chunk in chunks:
-                if chunk.strip():  # Only send non-empty chunks
-                    full_message = f"{chunk}\r\n"
-                    self.bot.writer.write(full_message)
-                    await self.bot.writer.drain()
-                    print(f"{Fore.YELLOW}-> {chunk}{Style.RESET_ALL}")  # Show outgoing message
-                    await asyncio.sleep(0.1)  # Reduced delay between chunks from 0.5 to 0.1
-        except Exception as e:
-            print(f"{Fore.RED}Error sending message: {e}{Style.RESET_ALL}")
 
     async def disconnect(self):
         """Safely disconnect from the BBS."""

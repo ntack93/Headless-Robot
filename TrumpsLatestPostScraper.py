@@ -48,34 +48,32 @@ def download_truthsocial_page(output_file):
         wait = WebDriverWait(driver, 30)
         print("Waiting for page to load...")
         
-        # Try different selectors in sequence
-        selectors = [
-            (By.CSS_SELECTOR, "div[data-testid='status']"),
-            (By.CSS_SELECTOR, ".status"),
-            (By.XPATH, "//div[contains(@class, 'status')]"),
-            (By.TAG_NAME, "article")
-        ]
+        # Wait explicitly for status posts to appear
+        try:
+            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "[data-testid='status']")))
+            print("Posts found on page!")
+        except Exception as e:
+            print(f"Warning: Timed out waiting for posts: {e}")
         
-        for by, selector in selectors:
-            try:
-                wait.until(EC.presence_of_element_located((by, selector)))
-                print(f"Page loaded successfully using selector: {selector}")
-                break
-            except:
-                continue
+        # Let the page render completely
+        time.sleep(4)
         
-        # Multiple scrolls with longer delays
-        print("Scrolling to load more content...")
-        for _ in range(3):
-            try:
-                driver.execute_script("window.scrollBy(0, 1000);")
-                time.sleep(3)  # Increased wait time
-            except Exception as e:
-                print(f"Scroll error: {e}")
-                break
+        # More aggressive scrolling to ensure more posts are loaded
+        print("Scrolling to load content...")
+        try:
+            # Scroll down multiple times to load more content
+            driver.execute_script("window.scrollBy(0, 500);")
+            time.sleep(1)
+            driver.execute_script("window.scrollBy(0, 500);")
+            time.sleep(1)
+            driver.execute_script("window.scrollBy(0, 500);")
+            time.sleep(1)
+            # Don't scroll back to top, we want to capture posts that are now loaded
+        except Exception as e:
+            print(f"Scroll error: {e}")
 
         # Final wait to ensure everything is loaded
-        time.sleep(5)  # Increased final wait
+        time.sleep(3)
 
         print("Retrieving page source...")
         page_source = driver.page_source
@@ -92,33 +90,127 @@ def download_truthsocial_page(output_file):
 
 def get_latest_post(html_file):
     """
-    Reads the local HTML file and finds Trump's latest post using the specific HTML structure.
+    Reads the local HTML file and finds Trump's latest text post.
     """
     with open(html_file, 'r', encoding='utf-8') as file:
         content = file.read()
 
     soup = BeautifulSoup(content, 'html.parser')
     
-    # Find the first status div that contains both the post content and timestamp
+    print("Looking for Trump's posts...")
+    
+    # First attempt: Use aria-label containing Trump's name
+    print("Method 1: Looking for posts with Trump's name in aria-label...")
     status_divs = soup.find_all('div', class_='status cursor-pointer focusable')
+    print(f"Found {len(status_divs)} status divs")
+    
+    valid_posts = []
     
     for div in status_divs:
-        # Find the post content paragraph
-        content_p = div.find('p', {'data-markup': 'true'})
-        # Find the timestamp element
-        time_element = div.find('time')
-        
-        if content_p and time_element:
-            # Get the text content and timestamp
-            post_text = content_p.get_text(strip=True)
-            post_time = time_element.get('title')
+        # Check if it has Trump's name
+        aria_label = div.get('aria-label', '')
+        if 'Donald J. Trump' not in aria_label:
+            continue
             
-            if post_text and post_time:
-                print(f"Debug - Found status div with content")
-                print(f"Debug - Post text: {post_text}")
-                print(f"Debug - Time: {post_time}")
-                return post_text, post_time
-
+        # Find the content paragraph - might be nested deeply
+        content_p = div.find('p', {'data-markup': 'true'})
+        if not content_p:
+            print(f"No content paragraph found for a Trump post")
+            continue
+            
+        # Get text content
+        post_text = content_p.get_text(strip=True)
+        
+        # Skip empty posts or just URLs
+        if not post_text or (post_text.startswith('http') and ' ' not in post_text):
+            print(f"Skipping post: appears to be just a URL or empty")
+            continue
+            
+        # Find timestamp
+        time_element = div.find('time')
+        if not time_element:
+            print(f"No timestamp found for a Trump post")
+            continue
+            
+        post_time = time_element.get('title')
+        timestamp = time_element.get('datetime')
+        
+        # Check data-index of parent containers
+        parent_with_index = None
+        for parent in div.parents:
+            if parent.has_attr('data-index'):
+                parent_with_index = parent
+                break
+                
+        index = 999
+        if parent_with_index:
+            try:
+                index = int(parent_with_index.get('data-index', '999'))
+                print(f"Found post with data-index={index}")
+            except ValueError:
+                pass
+                
+        print(f"Found valid Trump post: {post_text[:50]}...")
+        valid_posts.append((post_text, post_time, timestamp, index))
+    
+    # If we found valid posts, return the one with lowest index (most recent)
+    if valid_posts:
+        # Sort by index (ascending)
+        sorted_posts = sorted(valid_posts, key=lambda x: x[3])
+        print(f"Found {len(valid_posts)} valid posts, returning most recent (index {sorted_posts[0][3]})")
+        return sorted_posts[0][0], sorted_posts[0][1]
+    
+    # If no posts found, try other methods
+    print("No posts found with primary method, trying alternative approaches...")
+    
+    # Method 2: Find all paragraphs with data-markup and work backward
+    print("Method 2: Looking for post content paragraphs...")
+    content_ps = soup.find_all('p', {'data-markup': 'true'})
+    print(f"Found {len(content_ps)} content paragraphs")
+    
+    valid_posts = []
+    
+    for p in content_ps:
+        post_text = p.get_text(strip=True)
+        
+        # Skip empty posts or just URLs
+        if not post_text or (post_text.startswith('http') and ' ' not in post_text):
+            continue
+            
+        # Find the closest status div upward
+        status_div = None
+        for parent in p.parents:
+            if parent.name == 'div' and 'status' in parent.get('class', []):
+                status_div = parent
+                break
+                
+        if not status_div:
+            continue
+            
+        # Check if it has Trump's name
+        aria_label = status_div.get('aria-label', '')
+        if 'Donald J. Trump' not in aria_label and 'realDonaldTrump' not in aria_label:
+            continue
+            
+        # Find timestamp
+        time_element = status_div.find('time')
+        if not time_element:
+            continue
+            
+        post_time = time_element.get('title')
+        timestamp = time_element.get('datetime')
+        
+        print(f"Found valid Trump post via method 2: {post_text[:50]}...")
+        valid_posts.append((post_text, post_time, timestamp))
+    
+    # Sort by timestamp (most recent first)
+    if valid_posts:
+        # Sort by timestamp (most recent first)
+        sorted_posts = sorted(valid_posts, key=lambda x: x[2] if x[2] else "", reverse=True)
+        print(f"Found {len(valid_posts)} valid posts via alternative method, returning most recent")
+        return sorted_posts[0][0], sorted_posts[0][1]
+    
+    print("No posts found after trying all methods")
     return None, None
 
 if __name__ == "__main__":
