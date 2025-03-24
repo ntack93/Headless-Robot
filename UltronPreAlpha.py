@@ -3547,6 +3547,18 @@ class BBSBotApp:
                 if "image" in item and "thumbnailLink" in item.get("image", {}):
                     image_url = item["image"]["thumbnailLink"]
             
+            # Check if the image URL has width/height appended incorrectly
+            for ext in ['.jpg', '.jpeg', '.png', '.gif']:
+                if ext in image_url.lower():
+                    # Find where the extension ends and check if there's appended data
+                    ext_pos = image_url.lower().find(ext) + len(ext)
+                    if ext_pos < len(image_url):
+                        # If there's data after the extension, it might be width/height info
+                        # Extract it and separate it from the URL
+                        suffix = image_url[ext_pos:]
+                        image_url = image_url[:ext_pos]  # Keep only the clean URL with extension
+                        print(f"Cleaned URL by removing suffix: {suffix}")
+            
             # Extract image metadata if available
             image_width = None
             image_height = None
