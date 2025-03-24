@@ -1,6 +1,6 @@
-# BBS Chat Bot
+# Ultron
 
-BBS Chat Bot is a Python application that functions as a BBS Teleconference Bot with the purpose of bringing modern amenities to the teleconference module. It's multi-function operation works via a !trigger system.
+Ultron is a BBS Teleconference Bot with the purpose of bringing modern amenities to the teleconference module of Worldgroup/MajorBBS. It's multi-function operation works via a !trigger system.
 
 ## Features
 
