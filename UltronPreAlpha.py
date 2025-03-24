@@ -3494,22 +3494,22 @@ class BBSBotApp:
         """Fetch a picture or GIF URL based on the query format '!pic <img/gif> <search terms>'."""
         if not query:
             return "Usage: !pic <img/gif> <search terms>"
-
+    
         # Split the query into type and search terms
         parts = query.split(maxsplit=1)
         if len(parts) < 2:
             return "Usage: !pic <img/gif> <search terms>"
-
+    
         pic_type, search_terms = parts[0].lower(), parts[1]
-
+    
         if pic_type not in ["img", "gif"]:
             return "Invalid type. Use 'img' for images or 'gif' for GIFs."
-
+    
         cse_key = self.google_cse_api_key.get()
         cse_id = self.google_cse_pic_cx.get()
         if not cse_key or not cse_id:
             return "Google CSE API key or engine ID is missing."
-
+    
         url = "https://www.googleapis.com/customsearch/v1"
         params = {
             "key": cse_key,
@@ -3518,13 +3518,13 @@ class BBSBotApp:
             "searchType": "image",
             "num": 1
         }
-
+    
         # Add filetype restriction based on type
         if pic_type == "gif":
             params["fileType"] = "gif"
         elif pic_type == "img":
             params["fileType"] = "jpg,png"
-
+    
         try:
             r = requests.get(url, params=params, timeout=10)
             data = r.json()
@@ -3547,6 +3547,13 @@ class BBSBotApp:
                 if "image" in item and "thumbnailLink" in item.get("image", {}):
                     image_url = item["image"]["thumbnailLink"]
             
+            # Extract image metadata if available
+            image_width = None
+            image_height = None
+            if "image" in item:
+                image_width = item["image"].get("width")
+                image_height = item["image"].get("height")
+            
             # Shorten URL with error handling
             try:
                 shortened_url = self.shorten_url(image_url)
@@ -3557,9 +3564,20 @@ class BBSBotApp:
                     final_url = image_url
             except Exception:
                 final_url = image_url
+            
+            # Format response with proper spacing between URL and metadata
+            response = f"{pic_type.upper()} result for '{search_terms}': {final_url}"
+            
+            # Add metadata in parentheses if available
+            if image_width and image_height:
+                response += f" (Dimensions: {image_width}x{image_height})"
+            elif image_width:
+                response += f" (Width: {image_width}px)"
+            elif image_height:
+                response += f" (Height: {image_height}px)"
                 
-            return f"{pic_type.upper()} result for '{search_terms}': {final_url}"
-
+            return response
+    
         except requests.exceptions.RequestException as e:
             return f"Error fetching {pic_type}: {str(e)}"
         except Exception as e:
